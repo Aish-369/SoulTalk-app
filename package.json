@@ -11,10 +11,14 @@
   },
   "dependencies": {
     "@google/genai": "latest",
+    "@types/pg": "^8.23.1",
     "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
     "express": "^4.21.2",
     "lucide-react": "^1.16.0",
     "motion": "^12.4.7",
+    "pg": "^8.23.0",
+    "pgvector": "^0.3.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "recharts": "^2.15.1"

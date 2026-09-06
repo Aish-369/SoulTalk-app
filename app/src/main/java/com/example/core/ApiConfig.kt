@@ -16,16 +16,29 @@ object ApiConfig {
         }
     }
     
-    // Base URLs for different environments
-    private val devBaseUrl = "http://10.0.2.2:8000" // Android emulator
-    private val localNetworkBaseUrl = "http://192.168.1.100:8000" // Local network
-    private val prodBaseUrl = "https://api.soultalk.app" // Production
+    // Single Source of Truth Production HTTPS Cloud Backend URL
+    const val CLOUD_BASE_URL = "https://ais-dev-byrih4kpeyzpyp7htmlzlu-607559042008.asia-east1.run.app/"
     
-    // Get current base URL
+    // Get current base URL - defaults to production Cloud URL on real APK
     val baseUrl: String
-        get() = when(currentEnvironment) {
-            ENV_PROD -> prodBaseUrl
-            else -> devBaseUrl
+        get() {
+            return try {
+                val configured = com.example.BuildConfig.BACKEND_BASE_URL
+                if (!configured.isNullOrBlank() &&
+                    !configured.contains("10.0.2.2") &&
+                    !configured.contains("localhost") &&
+                    !configured.contains("127.0.0.1") &&
+                    !configured.contains("192.168.") &&
+                    !configured.contains(":3000") &&
+                    !configured.contains(":8000") &&
+                    configured.startsWith("https://")) {
+                    if (configured.endsWith("/")) configured else "$configured/"
+                } else {
+                    CLOUD_BASE_URL
+                }
+            } catch (e: Throwable) {
+                CLOUD_BASE_URL
+            }
         }
     
     // API endpoints

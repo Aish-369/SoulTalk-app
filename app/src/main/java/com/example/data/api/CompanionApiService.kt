@@ -571,9 +571,7 @@ interface CompanionApiService {
   ): SettingsResetMemoryResponse
 
   companion object {
-    private const val BASE_URL = "http://10.0.2.2:8000/" // Default for localhost FastAPI in Android emulator
-
-    fun create(baseUrl: String = BASE_URL): CompanionApiService {
+    fun create(baseUrl: String = ApiConfig.baseUrl): CompanionApiService {
       val moshi = Moshi.Builder()
         .addLast(KotlinJsonAdapterFactory())
         .build()

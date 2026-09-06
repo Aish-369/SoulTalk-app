@@ -1,5 +1,8 @@
 package com.example.data.api
 
+import com.example.core.ApiConfig
+import okhttp3.OkHttpClient
+import java.util.concurrent.TimeUnit
 import retrofit2.Retrofit
 import retrofit2.converter.moshi.MoshiConverterFactory
 import retrofit2.http.Body
@@ -71,15 +74,20 @@ interface AuthApiService {
   suspend fun refreshTokens(@Body request: RefreshRequest): RefreshResponse
 
   companion object {
-    private const val BASE_URL = "http://10.0.2.2:8000/" // FastAPI running in localhost in emulator
-
-    fun create(baseUrl: String = BASE_URL): AuthApiService {
+    fun create(baseUrl: String = ApiConfig.baseUrl): AuthApiService {
       val moshi = Moshi.Builder()
         .addLast(KotlinJsonAdapterFactory())
         .build()
 
+      val okHttpClient = OkHttpClient.Builder()
+        .connectTimeout(ApiConfig.CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(ApiConfig.READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .writeTimeout(ApiConfig.WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .build()
+
       return Retrofit.Builder()
         .baseUrl(baseUrl)
+        .client(okHttpClient)
         .addConverterFactory(MoshiConverterFactory.create(moshi))
         .build()
         .create(AuthApiService::class.java)

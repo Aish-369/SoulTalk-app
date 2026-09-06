@@ -95,7 +95,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onEnter }) => {
           className="relative mb-3 flex flex-col items-center"
         >
           <div className="absolute inset-0 rounded-2xl bg-gradient-to-tr from-pink-500/30 via-purple-600/30 to-indigo-500/30 blur-xl opacity-60 animate-pulse" />
-          <SoulTalkLogo variant="official-card" size="md" className="shadow-xl" />
+          <SoulTalkLogo variant="official-card" size="md" />
         </motion.div>
 
         {/* Pillars */}

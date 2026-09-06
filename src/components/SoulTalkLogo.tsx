@@ -1,5 +1,6 @@
 import React from 'react';
-import officialLogoImg from '../assets/images/soultalk_official_logo_1786980180262.jpg';
+import officialLogoImg from '../assets/images/soultalk_official_logo.png';
+import officialEmblemImg from '../assets/images/soultalk_emblem.png';
 
 interface SoulTalkLogoProps {
   size?: 'xs' | 'sm' | 'md' | 'lg' | 'xl' | '2xl';
@@ -46,43 +47,42 @@ export const SoulTalkLogo: React.FC<SoulTalkLogoProps> = ({
     '2xl': 'text-base'
   }[size];
 
-  // Official Card Variant: Displays the exact official image asset as provided
+  // Official Card Variant: Displays the transparent official logo cleanly without black background
   if (variant === 'official-card') {
     const cardMaxW = {
       xs: 'max-w-[110px]',
       sm: 'max-w-[150px]',
-      md: 'max-w-[190px]',
-      lg: 'max-w-[250px]',
-      xl: 'max-w-[310px]',
-      '2xl': 'max-w-[380px]'
+      md: 'max-w-[200px]',
+      lg: 'max-w-[260px]',
+      xl: 'max-w-[320px]',
+      '2xl': 'max-w-[390px]'
     }[size];
 
     return (
-      <div className={`relative group rounded-3xl overflow-hidden shadow-2xl border border-purple-500/30 bg-slate-950 ${cardMaxW} ${className}`}>
-        <div className="absolute -inset-1 bg-gradient-to-r from-pink-500/20 via-purple-600/30 to-indigo-500/20 blur-xl opacity-75 group-hover:opacity-100 transition duration-500" />
-        <div className="relative overflow-hidden rounded-3xl">
-          <img
-            src={officialLogoImg}
-            alt="SoulTalk - AI That Listens to Your Soul"
-            referrerPolicy="no-referrer"
-            className="w-full h-auto object-cover transform transition-transform duration-500 group-hover:scale-105"
-          />
-        </div>
+      <div className={`relative group flex items-center justify-center ${cardMaxW} ${className}`}>
+        {/* Soft atmospheric ambient glow behind the transparent emblem */}
+        <div className="absolute -inset-3 bg-gradient-to-r from-pink-400/20 via-purple-500/20 to-indigo-400/20 blur-2xl opacity-75 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none rounded-full" />
+        <img
+          src={officialLogoImg}
+          alt="SoulTalk - AI That Listens to Your Soul"
+          referrerPolicy="no-referrer"
+          className="relative z-10 w-full h-auto object-contain drop-shadow-sm transform transition-transform duration-500 group-hover:scale-105"
+        />
       </div>
     );
   }
 
-  // Emblem renderer: either official image avatar or vector SVG
+  // Emblem renderer: either official transparent image avatar or vector SVG
   const emblem = useImage ? (
     <div
-      className="relative rounded-2xl overflow-hidden shadow-md border border-purple-300/40 shrink-0 bg-slate-950 flex items-center justify-center"
+      className="relative shrink-0 flex items-center justify-center transition-transform hover:scale-105"
       style={{ width: iconDimensions.w, height: iconDimensions.h }}
     >
       <img
-        src={officialLogoImg}
+        src={officialEmblemImg}
         alt="SoulTalk Logo"
         referrerPolicy="no-referrer"
-        className="w-full h-full object-cover transform scale-125 hover:scale-135 transition-transform"
+        className="w-full h-full object-contain drop-shadow-xs"
       />
     </div>
   ) : (

@@ -21,6 +21,7 @@ import {
 import { WHISPER_ENVIRONMENTS } from '../data/companionData';
 import { WhisperEnv, VoiceMemory, User } from '../types';
 import { ambientSound, speakText, stopSpeaking } from '../utils/audioSynthesis';
+import { authenticatedFetch } from '../utils/api';
 
 interface VoiceCompanionScreenProps {
   user: User;
@@ -175,10 +176,9 @@ export const VoiceCompanionScreen: React.FC<VoiceCompanionScreenProps> = ({
     setIsAnalyzing(true);
 
     try {
-      // Call backend /api/voice/reflect
-      const response = await fetch('/api/voice/reflect', {
+      // Call backend /api/voice/reflect with authentication
+      const response = await authenticatedFetch('/api/voice/reflect', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           transcript: recordedText,
           companion_name: user.companion_name,

@@ -1,11 +1,12 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Mail, Lock, User as UserIcon, Eye, EyeOff, Sparkles, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Mail, Lock, User as UserIcon, Eye, EyeOff, Sparkles, ArrowRight, ShieldCheck, Loader2 } from 'lucide-react';
 import { WolfieCharacter } from '../components/WolfieCharacter';
 import { SoulTalkLogo } from '../components/SoulTalkLogo';
 import { User } from '../types';
 import { PrivacyAndTermsModal } from '../components/PrivacyAndTermsModal';
 import { analytics } from '../utils/analytics';
+import { authStorage } from '../utils/api';
 
 interface LoginSignupScreenProps {
   companionName: string;
@@ -28,7 +29,7 @@ export const LoginSignupScreen: React.FC<LoginSignupScreenProps> = ({
   const [showLegalModal, setShowLegalModal] = useState(false);
   const [legalModalTab, setLegalModalTab] = useState<'privacy' | 'terms' | 'datasafety'>('privacy');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
 
@@ -46,36 +47,78 @@ export const LoginSignupScreen: React.FC<LoginSignupScreenProps> = ({
     }
 
     setLoading(true);
-    setTimeout(() => {
+
+    try {
+      const endpoint = isRegister ? '/api/auth/register' : '/api/auth/login';
+      const payload = isRegister
+        ? { email, password, name: name.trim(), companion_name: companionName, companion_type: companionType }
+        : { email, password };
+
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+
+      const data = await res.json();
+
+      if (!res.ok || !data.success) {
+        setError(data.error || 'Authentication failed. Please check your credentials.');
+        setLoading(false);
+        return;
+      }
+
+      if (data.access_token) {
+        authStorage.setToken(data.access_token);
+      }
+
+      analytics.trackAccountCreation('email');
+      onAuthSuccess(data.user);
+    } catch (err: any) {
+      setError('Connection to sanctuary server failed. Please try again.');
+    } finally {
       setLoading(false);
-      const user: User = {
-        id: 'usr_' + Date.now(),
-        name: isRegister ? name : (email.split('@')[0] || 'Friend'),
-        email,
+    }
+  };
+
+  const handleGuestLogin = async () => {
+    setLoading(true);
+    setError('');
+
+    try {
+      const res = await fetch('/api/auth/guest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          companion_name: companionName,
+          companion_type: companionType
+        })
+      });
+
+      const data = await res.json();
+      if (data.access_token) {
+        authStorage.setToken(data.access_token);
+      }
+
+      analytics.trackAccountCreation('guest');
+      onAuthSuccess(data.user);
+    } catch (err) {
+      // Fallback guest user if server is completely offline
+      const guestUser: User = {
+        id: 'guest_' + Math.floor(Math.random() * 10000),
+        name: 'Kind Soul',
+        email: 'guest@soultalk.app',
         language: 'en',
         companion_type: companionType,
         companion_name: companionName,
         personality_type: 'Gentle Friend',
         created_at: Date.now()
       };
-      analytics.trackAccountCreation('email');
-      onAuthSuccess(user);
-    }, 600);
-  };
-
-  const handleGuestLogin = () => {
-    const guestUser: User = {
-      id: 'guest_' + Math.floor(Math.random() * 10000),
-      name: 'Kind Soul',
-      email: 'guest@soultalk.app',
-      language: 'en',
-      companion_type: companionType,
-      companion_name: companionName,
-      personality_type: 'Gentle Friend',
-      created_at: Date.now()
-    };
-    analytics.trackAccountCreation('guest');
-    onAuthSuccess(guestUser);
+      analytics.trackAccountCreation('guest');
+      onAuthSuccess(guestUser);
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (

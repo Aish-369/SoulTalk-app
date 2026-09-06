@@ -422,7 +422,40 @@ def generate_offline_empathetic_reply(message: str, emotion: str, companion_name
     else:
         return f"I am listening with an open heart. 😐 Resting gently in this calm baseline is such a beautiful way to be. Would you like to tell me more about what's drifting through your mind today, my cozy friend?"
 
-def query_gemini_api(system_instruction: str, contents_payload: list) -> str:
+def query_ollama_api(system_instruction: str, user_message: str, model: str = "qwen2.5") -> Optional[str]:
+    ollama_url = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434/api/chat")
+    payload = {
+        "model": os.environ.get("OLLAMA_MODEL", model),
+        "messages": [
+            {"role": "system", "content": system_instruction},
+            {"role": "user", "content": user_message}
+        ],
+        "stream": False,
+        "options": {
+            "temperature": 0.7,
+            "top_p": 0.9
+        }
+    }
+    try:
+        req = urllib.request.Request(
+            ollama_url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=3.5) as response:
+            if response.status == 200:
+                resp_bytes = response.read()
+                resp_data = json.loads(resp_bytes.decode("utf-8"))
+                text = resp_data.get("message", {}).get("content") or resp_data.get("response")
+                if text:
+                    return text.strip()
+    except Exception as e:
+        # Ollama not running locally or timed out
+        pass
+    return None
+
+def query_gemini_api(system_instruction: str, contents_payload: list) -> Optional[str]:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         try:
@@ -435,7 +468,7 @@ def query_gemini_api(system_instruction: str, contents_payload: list) -> str:
     if not api_key or api_key == "MY_GEMINI_API_KEY":
         return None
 
-    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-3.7-flash"]
+    candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
     for model in candidate_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
         
@@ -458,14 +491,14 @@ def query_gemini_api(system_instruction: str, contents_payload: list) -> str:
                 headers={"Content-Type": "application/json"},
                 method="POST"
             )
-            with urllib.request.urlopen(req, timeout=12) as response:
+            # Fast 2.5s timeout so offline mode engages immediately without hanging
+            with urllib.request.urlopen(req, timeout=2.5) as response:
                 resp_bytes = response.read()
                 resp_data = json.loads(resp_bytes.decode("utf-8"))
                 text = resp_data["candidates"][0]["content"]["parts"][0]["text"]
                 if text:
-                    return text
+                    return text.strip()
         except Exception as e:
-            # Try next fallback model
             continue
     return None
 
@@ -600,16 +633,18 @@ def send_chat_message(
         gemini_context.get('recent_conversation', [])
     )
 
-    # 5. Query Gemini with enhanced context
-    api_reply = query_gemini_api(system_instruction, contents_payload)
+    # 5. Multi-Tier AI Generation (Local Ollama -> Gemini API -> Local Offline RAG)
+    ollama_reply = query_ollama_api(system_instruction, user_msg_text)
+    api_reply = ollama_reply if ollama_reply else query_gemini_api(system_instruction, contents_payload)
     
-    # 6. Fallback with emotional intelligence
+    # 6. High-fidelity Offline RAG Fallback
     if not api_reply:
         reply = generate_offline_empathetic_reply(user_msg_text, detected_emotion.value, user.companion_name)
-        logger.info(f"CHAT API - Using offline fallback with emotion {detected_emotion.value}")
+        logger.info(f"CHAT API - Using local offline RAG fallback with emotion {detected_emotion.value}")
     else:
         reply = api_reply
-        logger.info(f"CHAT API - Gemini response received with emotion {detected_emotion.value}")
+        engine_label = "Local Ollama" if ollama_reply else "Gemini"
+        logger.info(f"CHAT API - {engine_label} response received with emotion {detected_emotion.value}")
 
     # 7. Store conversation in memory system
     memory_sys.store_conversation_memory(

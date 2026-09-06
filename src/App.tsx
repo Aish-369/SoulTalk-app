@@ -34,6 +34,7 @@ import { CustomizationModal } from './components/CustomizationModal';
 import { EmergencyCrisisModal } from './components/EmergencyCrisisModal';
 import { AnalyticsDashboardModal } from './components/AnalyticsDashboardModal';
 import { analytics } from './utils/analytics';
+import { authStorage, authenticatedFetch } from './utils/api';
 
 export const App: React.FC = () => {
   // Screen State
@@ -427,14 +428,16 @@ export const App: React.FC = () => {
             onSwitchCompanion={() => setCurrentScreen('companion_select')}
             onOpenAnalytics={() => setIsAnalyticsModalOpen(true)}
             onLogout={() => {
+              authStorage.clearToken();
+              localStorage.removeItem('soultalk_user');
               setCurrentScreen('login');
             }}
-            onResetData={() => {
-              localStorage.removeItem('soultalk_user');
-              localStorage.removeItem('soultalk_chat');
-              localStorage.removeItem('soultalk_memories');
-              localStorage.removeItem('soultalk_moods');
-              localStorage.removeItem('soultalk_progress');
+            onResetData={async () => {
+              try {
+                await authenticatedFetch('/api/data/delete', { method: 'DELETE' });
+              } catch (e) {}
+              authStorage.clearToken();
+              localStorage.clear();
               window.location.reload();
             }}
           />

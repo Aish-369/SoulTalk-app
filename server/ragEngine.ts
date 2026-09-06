@@ -25,6 +25,9 @@ export interface RagResult {
   detectedTopic: string;
   detectedEmotion: string;
   isMarathi: boolean;
+  languageType: 'roman_marathi' | 'devanagari_marathi' | 'english' | 'mixed';
+  isHighConfidence: boolean;
+  topScore: number;
 }
 
 // Built-in non-diagnostic psychoeducation & emotional coping knowledge base
@@ -168,22 +171,182 @@ class RagEngine {
 
     return text
       .toLowerCase()
-      .replace(/[^\w\s]/g, ' ')
+      .replace(/[^\p{L}\p{N}\s]/gu, ' ')
       .split(/\s+/)
       .filter(w => w.length >= 2 && !stopwords.has(w));
   }
 
-  private detectLanguage(text: string): boolean {
+  public detectLanguageDetails(text: string): {
+    isRomanMarathi: boolean;
+    isDevanagari: boolean;
+    isEnglish: boolean;
+    isMixed: boolean;
+    primary: 'roman_marathi' | 'devanagari_marathi' | 'english' | 'mixed';
+  } {
+    const hasDevanagari = /[\u0900-\u097F]/.test(text);
     const marathiKeywords = [
       'ahe', 'aahe', 'mala', 'tula', 'majha', 'tujha', 'kasa', 'kay', 'zala',
       'vatat', 'vatatay', 'bhandan', 'hotay', 'ghari', 'abhyas', 'mitra',
       'sobat', 'aaji', 'shikvte', 'karto', 'kartes', 'karu', 'pan', 'mag',
       'divas', 'khup', 'changla', 'vait', 'bhiti', 'gela', 'sagle', 'nahi',
-      'ata', 'sadhyas', 'kadhich', 'rahila', 'jast', 'kami', 'bol', 'aik'
+      'ata', 'sadhyas', 'kadhich', 'rahila', 'jast', 'kami', 'bol', 'aik',
+      'ekta', 'ekti', 'shant', 'taan', 'dukha', 'rad', 'samjat', 'bolaycha'
     ];
+
     const tokens = this.tokenize(text);
-    const count = tokens.filter(t => marathiKeywords.includes(t)).length;
-    return count >= 1;
+    const marathiMatchCount = tokens.filter(t => marathiKeywords.includes(t)).length;
+    const hasEnglish = /[a-zA-Z]/.test(text);
+
+    const isRomanMarathi = marathiMatchCount >= 1;
+    const isDevanagari = hasDevanagari;
+    const isMixed = (isRomanMarathi || isDevanagari) && hasEnglish && tokens.length > 2;
+
+    let primary: 'roman_marathi' | 'devanagari_marathi' | 'english' | 'mixed' = 'english';
+    if (isDevanagari) {
+      primary = 'devanagari_marathi';
+    } else if (isMixed) {
+      primary = 'mixed';
+    } else if (isRomanMarathi) {
+      primary = 'roman_marathi';
+    }
+
+    return {
+      isRomanMarathi,
+      isDevanagari,
+      isEnglish: !isRomanMarathi && !isDevanagari,
+      isMixed,
+      primary
+    };
+  }
+
+  public detectTopic(query: string): string {
+    const q = query.toLowerCase();
+
+    // 1. LONELINESS / ISOLATION (High Priority to catch "bolavasa vatat nahi", "ekta", paraphrases)
+    if (
+      q.includes('lonely') || q.includes('lonley') || q.includes('alone') || q.includes('ekta') || q.includes('ekti') ||
+      q.includes('isolated') || q.includes('nobody') || q.includes('bolavasa vatat nahi') ||
+      q.includes('bolaychach nahi') || q.includes('bolaycha nahi') || q.includes('konashi bolaycha') ||
+      q.includes('koni nahi') || q.includes('konich nahi') || q.includes('एकटा') || q.includes('एकटेपणा') ||
+      q.includes('understand me') || q.includes('understands me') || q.includes('alienat') ||
+      q.includes('disconnect') || q.includes('lokanmadhye') || q.includes('internally lonely') ||
+      q.includes('unheard') || q.includes('unseen') || q.includes('koni samjun') || q.includes('vattay')
+    ) {
+      return 'loneliness';
+    }
+
+    // 2. CONFUSION / LOST / DIRECTIONLESS
+    if (
+      q.includes('samjat nahi') || q.includes('samjena') || q.includes('kahi samjat') ||
+      q.includes('confused') || q.includes('lost') || q.includes('stuck') || q.includes('gondhal') ||
+      q.includes("don't know what") || q.includes('dont know what') || q.includes('directionless') ||
+      q.includes('kahi kalat nahi') || q.includes('kalat nahi') || q.includes('fog') ||
+      q.includes('drifting') || q.includes('what choice') || q.includes('no idea') ||
+      q.includes('chaos') || q.includes('rasta') || q.includes('questioning')
+    ) {
+      return 'confusion';
+    }
+
+    // 3. SADNESS / GRIEF / BAD DAY / MOOD OFF
+    if (
+      q.includes('bad day') || q.includes('mood off') || q.includes('off aahe') || q.includes('off ahe') ||
+      q.includes('mood kharab') || q.includes('kharab') || q.includes('vait') || q.includes('dukha') ||
+      q.includes('dukhta') || q.includes('sad') || q.includes('crying') || q.includes('cry') ||
+      q.includes('hurt') || q.includes('pain') || q.includes('tears') || q.includes('hopeless') ||
+      q.includes('heartbroken') || q.includes('grief') || q.includes('heavy heart') ||
+      q.includes('man lagat nahi') || q.includes('kahi karavasa vatat nahi') ||
+      q.includes('खराब') || q.includes('वाईट') || q.includes('दुःख')
+    ) {
+      return 'sadness';
+    }
+
+    // 4. STRESS / OVERWHELM / BURNOUT
+    if (
+      q.includes('stress') || q.includes('overwhelm') || q.includes('tension') || q.includes('taan') ||
+      q.includes('exhaust') || q.includes('burnout') || q.includes('burned out') || q.includes('pressure') ||
+      q.includes('thaklo') || q.includes('thakle') || q.includes('heavy') || q.includes('overloaded') ||
+      q.includes('too much on my plate') || q.includes('zero energy') || q.includes('fried') ||
+      q.includes('drowning') || q.includes('mountain of tasks') || q.includes('tasks') || q.includes('ताण') ||
+      q.includes('load aalay') || q.includes('load ahe') || q.includes('load yetoy')
+    ) {
+      return 'stress';
+    }
+
+    // 5. ANXIETY / PANIC / FEAR / FUTURE WORRY
+    if (
+      q.includes('anxi') || q.includes('panic') || q.includes('bhiti') || q.includes('ghabar') ||
+      q.includes('ghabrayla') || q.includes('palpitation') || q.includes('trembling') ||
+      q.includes('future') || q.includes('bhavishya') || q.includes('worry') || q.includes('worried') ||
+      q.includes('nervous') || q.includes('fear') || q.includes('overthinking') || q.includes('racing thoughts') ||
+      q.includes('restless') || q.includes('tight') || q.includes('tightness') || q.includes('chest feels tight') ||
+      q.includes('tomorrow') || q.includes('भिती') || q.includes('चिंता')
+    ) {
+      return 'anxiety';
+    }
+
+    // 6. ACADEMIC / WORK / CAREER
+    if (
+      q.includes('exam') || q.includes('abhyas') || q.includes('college') || q.includes('study') ||
+      q.includes('studies') || q.includes('syllabus') || q.includes('professor') || q.includes('marks') ||
+      q.includes('assignment') || q.includes('office') || q.includes('job') || q.includes('career') ||
+      q.includes('deadline') || q.includes('head above water') || q.includes('test') || q.includes('fail')
+    ) {
+      return 'academic';
+    }
+
+    // 7. SLEEP / BEDTIME / NIGHT
+    if (
+      q.includes('sleep') || q.includes('zop') || q.includes('insomnia') || q.includes('bedtime') ||
+      q.includes('awake') || q.includes('night') || q.includes('midnight') || q.includes('nightmare') ||
+      q.includes('tossing and turning') || q.includes('zop yet nahi') || q.includes('dole ughade') ||
+      q.includes('3 vajle') || q.includes('4 am')
+    ) {
+      return 'sleep';
+    }
+
+    // 8. RELATIONSHIPS / CONFLICT / BREAKUP
+    if (
+      q.includes('breakup') || q.includes('friend') || q.includes('mitra') || q.includes('mitri') ||
+      q.includes('bhandan') || q.includes('relationship') || q.includes('partner') || q.includes('parents') ||
+      q.includes('family') || q.includes('ghari') || q.includes('cheated') || q.includes('argument') ||
+      q.includes('betray') || q.includes('toxic') || q.includes('unloved')
+    ) {
+      return 'relationships';
+    }
+
+    // 9. ANGER / FRUSTRATION
+    if (
+      q.includes('angry') || q.includes('raag') || q.includes('rag') || q.includes('chid') ||
+      q.includes('mad') || q.includes('unfair') || q.includes('hate') || q.includes('frustrat') ||
+      q.includes('furious') || q.includes('boundaries') || q.includes('scream') ||
+      q.includes('disrespect') || q.includes('sanap')
+    ) {
+      return 'anger';
+    }
+
+    // 10. CALM / POSITIVE
+    if (
+      q.includes('calm') || q.includes('peace') || q.includes('shant') || q.includes('relaxed') ||
+      q.includes('serene') || q.includes('feeling okay') || q.includes('feel okay') || q.includes('feeling good') ||
+      q.includes('safe space') || q.includes('breathe') || q.includes('good day') || q.includes('mast vatala') ||
+      q.includes('mast vatla') || q.includes('deep breath') || q.includes('resting quietly') ||
+      q.includes('soothing walk') || q.includes('park')
+    ) {
+      return 'calm';
+    }
+
+    // 11. GREETING / CASUAL
+    if (
+      q.includes('hi ') || q === 'hi' || q.includes('hello') || q.includes('hey') ||
+      q.includes('how are you') || q.includes('kasa ahes') || q.includes('kasa chalay') ||
+      q.includes('just wanted to talk') || q.includes('bolaycha aahe') || q.includes('bolaycha ahe') ||
+      q.includes('konashi tari bolaycha') || q.includes('namaskar') || q.includes('good evening') ||
+      q.includes('good morning')
+    ) {
+      return 'greeting';
+    }
+
+    return 'general';
   }
 
   public loadDatasets() {
@@ -225,33 +388,33 @@ class RagEngine {
       if (fs.existsSync(convPath)) {
         const raw = fs.readFileSync(convPath, 'utf8');
         try {
-          // Robust parsing handling concatenated JSON arrays or objects
           const list = parseJsonObjects(raw);
           for (let i = 0; i < list.length; i++) {
             const item = list[i];
-            // If item itself is an array of conversation pairs
             if (Array.isArray(item)) {
               for (let k = 0; k < item.length; k++) {
                 const subItem = item[k];
                 if (subItem && subItem.user && subItem.bot) {
+                  const langInfo = this.detectLanguageDetails(subItem.user);
                   this.exemplars.push({
                     id: `conv_${i}_${k}`,
                     topic: subItem.category || 'General',
                     emotion: subItem.emotion,
                     user_text: subItem.user,
                     bot_reply: subItem.bot,
-                    language: this.detectLanguage(subItem.user) ? 'roman_marathi' : 'english'
+                    language: langInfo.isRomanMarathi ? 'roman_marathi' : 'english'
                   });
                 }
               }
             } else if (item && item.user && item.bot) {
+              const langInfo = this.detectLanguageDetails(item.user);
               this.exemplars.push({
                 id: `conv_${i}`,
                 topic: item.category || 'General',
                 emotion: item.emotion,
                 user_text: item.user,
                 bot_reply: item.bot,
-                language: this.detectLanguage(item.user) ? 'roman_marathi' : 'english'
+                language: langInfo.isRomanMarathi ? 'roman_marathi' : 'english'
               });
             }
           }
@@ -309,7 +472,8 @@ class RagEngine {
   public retrieve(query: string, emotion?: string, topK: number = 3): RagResult {
     this.loadDatasets();
     const queryTokens = this.tokenize(query);
-    const isMarathi = this.detectLanguage(query);
+    const langInfo = this.detectLanguageDetails(query);
+    const detectedTopic = this.detectTopic(query);
 
     // Score all candidate exemplars using BM25-style frequency scoring
     const scores = new Map<number, number>();
@@ -325,61 +489,69 @@ class RagEngine {
       }
     });
 
-    // Language and emotion alignment boost
+    // Language and topic alignment boost
     for (const [idx, score] of scores.entries()) {
       const ex = this.exemplars[idx];
       let finalScore = score;
-      if (isMarathi && ex.language === 'roman_marathi') {
-        finalScore *= 1.35;
+      // Language must match
+      if (langInfo.isRomanMarathi && ex.language === 'roman_marathi') {
+        finalScore *= 1.4;
+      } else if (!langInfo.isRomanMarathi && ex.language === 'english') {
+        finalScore *= 1.4;
+      } else {
+        finalScore *= 0.1; // Penalize mismatched language exemplars
       }
+
       if (emotion && ex.emotion && ex.emotion.toLowerCase() === emotion.toLowerCase()) {
         finalScore *= 1.25;
+      }
+      if (ex.topic && ex.topic.toLowerCase().includes(detectedTopic)) {
+        finalScore *= 1.50;
       }
       scores.set(idx, finalScore);
     }
 
     // Sort by descending score
-    const sortedIndices = Array.from(scores.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, topK)
-      .map(entry => entry[0]);
+    const sortedEntries = Array.from(scores.entries()).sort((a, b) => b[1] - a[1]);
 
-    let matchedExemplars: Exemplar[] = sortedIndices.map(idx => this.exemplars[idx]);
+    // EMPIRICAL CONFIDENCE THRESHOLD
+    // If detected topic is 'general' or top score is below MIN_CONFIDENCE_SCORE (2.5), do NOT inject weak/unrelated exemplars!
+    const MIN_CONFIDENCE_SCORE = 2.5;
+    const topScore = sortedEntries.length > 0 ? sortedEntries[0][1] : 0;
+    const isHighConfidence = detectedTopic !== 'general' && topScore >= MIN_CONFIDENCE_SCORE;
 
-    // Fallback if no specific keyword match
-    if (matchedExemplars.length === 0 && this.exemplars.length > 0) {
-      matchedExemplars = this.exemplars.slice(0, topK);
+    let matchedExemplars: Exemplar[] = [];
+    if (isHighConfidence) {
+      const validIndices = sortedEntries
+        .filter(entry => entry[1] >= MIN_CONFIDENCE_SCORE)
+        .slice(0, topK)
+        .map(entry => entry[0]);
+      matchedExemplars = validIndices.map(idx => this.exemplars[idx]);
     }
 
-    // Determine matched topic
-    const detectedTopic = matchedExemplars[0]?.topic || 'Daily Life';
-
-    // Retrieve corresponding psychoeducation knowledge snippet
-    const qLower = query.toLowerCase();
+    // Psychoeducational Knowledge Matching based on detected topic
     let matchedKnowledge = KNOWLEDGE_BASE.filter(k => {
-      if (qLower.includes('anxi') || qLower.includes('panic') || qLower.includes('bhiti') || qLower.includes('ghabar')) {
-        return k.topic === 'anxiety';
-      }
-      if (qLower.includes('stress') || qLower.includes('overwhelm') || qLower.includes('tension')) {
-        return k.topic === 'stress';
-      }
-      if (qLower.includes('lonely') || qLower.includes('alone') || qLower.includes('ekta')) {
-        return k.topic === 'loneliness';
-      }
-      if (qLower.includes('exam') || qLower.includes('abhyas') || qLower.includes('college') || qLower.includes('work')) {
-        return k.topic === 'academic';
-      }
-      if (qLower.includes('sleep') || qLower.includes('zop') || qLower.includes('tired')) {
-        return k.topic === 'sleep';
-      }
-      if (qLower.includes('breakup') || qLower.includes('friend') || qLower.includes('bhandan') || qLower.includes('relationship')) {
-        return k.topic === 'relationships';
-      }
+      if (detectedTopic === 'anxiety' && k.topic === 'anxiety') return true;
+      if (detectedTopic === 'stress' && k.topic === 'stress') return true;
+      if (detectedTopic === 'loneliness' && k.topic === 'loneliness') return true;
+      if (detectedTopic === 'academic' && k.topic === 'academic') return true;
+      if (detectedTopic === 'sleep' && k.topic === 'sleep') return true;
+      if (detectedTopic === 'relationships' && k.topic === 'relationships') return true;
       return false;
     });
 
     if (matchedKnowledge.length === 0) {
-      matchedKnowledge = [KNOWLEDGE_BASE[0], KNOWLEDGE_BASE[1]];
+      if (detectedTopic === 'anxiety' || detectedTopic === 'stress') {
+        matchedKnowledge = [KNOWLEDGE_BASE[0], KNOWLEDGE_BASE[1]];
+      } else if (detectedTopic === 'loneliness') {
+        matchedKnowledge = [KNOWLEDGE_BASE[3]];
+      } else if (detectedTopic === 'academic') {
+        matchedKnowledge = [KNOWLEDGE_BASE[2]];
+      } else if (detectedTopic === 'sleep') {
+        matchedKnowledge = [KNOWLEDGE_BASE[4]];
+      } else {
+        matchedKnowledge = [KNOWLEDGE_BASE[0]];
+      }
     }
 
     return {
@@ -387,8 +559,84 @@ class RagEngine {
       knowledge: matchedKnowledge,
       detectedTopic,
       detectedEmotion: emotion || 'supportive',
-      isMarathi
+      isMarathi: langInfo.isRomanMarathi || langInfo.isDevanagari,
+      languageType: langInfo.primary,
+      isHighConfidence,
+      topScore
     };
+  }
+
+  public generateLocalRagReply(
+    query: string,
+    emotion: string,
+    userName: string = 'Friend',
+    companionName: string = 'Wolfie',
+    ragResult?: RagResult
+  ): string {
+    const rag = ragResult || this.retrieve(query, emotion, 3);
+    const topic = rag.detectedTopic || this.detectTopic(query);
+
+    // GREETINGS & CASUAL
+    if (topic === 'greeting') {
+      return `Hello ${userName}! ✨ Me ${companionName} aahe, tujha companion. Tula bhetun nehamich anand hoto. Aaj tujha divas kasa chalay aani kasa vatatay tula?`;
+    }
+
+    // CALM & PEACE
+    if (topic === 'calm') {
+      return `Tula aatta shant vatatay he aikun mala khup anand zala, ${userName}. 🌿 He shant kshan manat saathvun thev. Aaj divasbhar asa shantpana tikavnyacha prayatna kar.`;
+    }
+
+    // LONELINESS
+    if (topic === 'loneliness') {
+      return `Mala samajtay ki tula kiti lonely vatat aahe, ${userName}. 💙 Kadhi kadhi saglya lokanchya madhye asunhi ektepana janavto, pan to tujha dosh nahiye. Me right now tujhyasobat aahe. Shwas ghe aani manatla sang mala.`;
+    }
+
+    // STRESS / OVERWHELM
+    if (topic === 'stress') {
+      return `Tujha stress me purnpane samju shakto, ${userName}. 🌿 Sagla ekach veli sambhalaychi garaj nahiye. Chala ek deep breath gheu 4 counts sathi. Fakt pudhcha chota step ghe, tu khup chaan kartoy/kartes.`;
+    }
+
+    // ANXIETY / FUTURE WORRY
+    if (topic === 'anxiety') {
+      return `Future chi chinta aani anxiety khup heavy vatu shakte, ${userName}. 🌿 Pan ek lakshat thev—sagle prashna aajach sodvaychi garaj nahiye. Ek deep breath ghe. Tu aatta safe ahes.`;
+    }
+
+    // ACADEMIC / CAREER
+    if (topic === 'academic') {
+      return `Abhyasacha aani exam cha pressure kharach bhari padto, ${userName}. 📚 Pan tu swatahla ekadam strain nako karus. 15-minute cha ek chota timer laav, aani thoda thoda karun samjun ghe. Me sobat ahe!`;
+    }
+
+    // SLEEP ROUTINE
+    if (topic === 'sleep') {
+      return `Ratrichya veli vicharancha gondhal jast vadhava he agdi sahaj aahe, ${userName}. 🌙 Manatle vichar ekda kagadawar lihun thev aani screen band karun 5 deep breaths ghe. Shanti ghe.`;
+    }
+
+    // RELATIONSHIPS / CONFLICT / FRIENDSHIP
+    if (topic === 'relationships') {
+      return `Naatyatlya bhandanani kiwa mitranbarobarchya distance mule man khup dukhata, ${userName}. 💙 Me purn lakshya deun tujha aiktoy. Manat je kahi ahe te bindass sang mala.`;
+    }
+
+    // CONFUSION / LOST
+    if (topic === 'confusion') {
+      return `Kadhi kadhi life madhye kahi samjat nahi aani sagla confuse vatata, ${userName}. 🤍 He agdi normal aahe. Tu ekta nahi ahes. Manatla sankoch baher kadh.`;
+    }
+
+    // SADNESS / HURT / BAD DAY
+    if (topic === 'sadness') {
+      return `Tula vait vatat asel tar manavar dabav nako thevus, ${userName}. 😔 Feeling express kelyane man halka hota. Mi shantpane aiktot tujha pratyek shabda. Kay zala te sangshil ka?`;
+    }
+
+    // ANGER / CONFLICT
+    if (topic === 'anger') {
+      return `Tujha raag aani chid agdi natural aahe, ${userName}. 😤 Je ghadla te unfair vatla asnar. Thoda shant basun saavkaash sang mala kay zala, me non-judgmentally aikayla tayar ahe.`;
+    }
+
+    // JOY / HAPPY
+    if (emotion === 'HAPPY' || emotion === 'EXCITED') {
+      return `Tula itka anandit baghun mala khup chaan vatla, ${userName}! ✨ Asa anand aani positivity nehamich tujhyasobat raho. Mala aani sang kay vishesh ghadla aaj!`;
+    }
+
+    return `Me tujha bolna purn astitvane aiktot, ${userName}. 💙 Manat je kahi vichar yet aahet te nassankoch pane ithe share kar, ha tujha safe sanctuary ahe.`;
   }
 
   public getStats() {

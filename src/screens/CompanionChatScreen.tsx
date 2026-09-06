@@ -19,6 +19,7 @@ import { ChatMessage, User, WolfieEmotion } from '../types';
 import { speakText, stopSpeaking } from '../utils/audioSynthesis';
 import { isCrisisKeyword } from '../data/emergencyResources';
 import { analytics } from '../utils/analytics';
+import { authenticatedFetch } from '../utils/api';
 
 interface CompanionChatScreenProps {
   user: User;
@@ -50,8 +51,33 @@ export const CompanionChatScreen: React.FC<CompanionChatScreenProps> = ({
   const [autoSpeechEnabled, setAutoSpeechEnabled] = useState(false);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
-  const handleClearChat = () => {
+  // Load User-Isolated Chat History from Backend
+  useEffect(() => {
+    let isMounted = true;
+    const fetchHistory = async () => {
+      try {
+        const res = await authenticatedFetch('/api/chat/history');
+        if (res.ok) {
+          const history = await res.json();
+          if (isMounted && Array.isArray(history) && history.length > 0) {
+            setMessages(history);
+          }
+        }
+      } catch (err) {
+        // Fallback to local memory if offline
+      }
+    };
+    fetchHistory();
+    return () => {
+      isMounted = false;
+    };
+  }, [user.id]);
+
+  const handleClearChat = async () => {
     stopSpeaking();
+    try {
+      await authenticatedFetch('/api/data/delete', { method: 'DELETE' });
+    } catch (e) {}
     setMessages([
       {
         id: Date.now(),
@@ -168,10 +194,9 @@ export const CompanionChatScreen: React.FC<CompanionChatScreenProps> = ({
     const timeoutId = setTimeout(() => controller.abort(), 8000);
 
     try {
-      // Call backend API /api/chat
-      const response = await fetch('/api/chat', {
+      // Call backend API /api/chat with user authentication
+      const response = await authenticatedFetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         signal: controller.signal,
         body: JSON.stringify({
           message: text,
@@ -188,8 +213,15 @@ export const CompanionChatScreen: React.FC<CompanionChatScreenProps> = ({
 
       if (response.ok) {
         const data = await response.json();
+
+        // P0 SAFETY: If backend identifies crisis, immediately trigger Emergency Crisis Modal
+        if (data.is_crisis) {
+          analytics.trackFeatureUsage('emergency_crisis_backend_flag_interception');
+          onOpenCrisis();
+        }
+
         const companionMsg: ChatMessage = {
-          id: Date.now() + 1,
+          id: data.message_id || Date.now() + 1,
           role: 'companion',
           message: data.reply || data.message || "I hear you deeply. Take a gentle breath with me.",
           emotion: data.emotion || 'SUPPORTIVE',
@@ -219,14 +251,30 @@ export const CompanionChatScreen: React.FC<CompanionChatScreenProps> = ({
       analytics.trackApiFailure('/api/chat', 0, e?.message || 'Network/Timeout failure');
       // Gentle empathetic fallback when server is down, offline, or times out
       setTimeout(() => {
-        let fallbackReply = `I'm listening closely to your words, ${user.name}. Whatever you're experiencing is completely valid. Would it feel soothing to take 3 slow diaphragmatic breaths together right now?`;
-        
-        if (text.toLowerCase().includes('anxious') || text.toLowerCase().includes('overwhelm') || text.toLowerCase().includes('stress')) {
-          fallbackReply = `I hear how heavy things feel right now. Place a gentle hand over your chest, breathe in slowly for 4 seconds, and let the future wait. You are safe in this sanctuary.`;
-        } else if (text.toLowerCase().includes('tired') || text.toLowerCase().includes('exhaust')) {
-          fallbackReply = `Your soul has been working so hard. Rest isn't a reward you have to earn; it is a sacred gift. Let's take today one soft step at a time.`;
-        } else if (text.toLowerCase().includes('happy') || text.toLowerCase().includes('good') || text.toLowerCase().includes('great')) {
-          fallbackReply = `That warms my heart so much! 🌟 Let's bottle up this lovely feeling so you can return to its warmth whenever you need it.`;
+        const textLower = text.toLowerCase();
+        const marathiKeywords = ['ahe', 'aahe', 'mala', 'tula', 'vatat', 'vatatay', 'stress', 'tension', 'ekta', 'ekti', 'bhandan', 'abhyas', 'khup', 'nahi', 'kasa', 'kay', 'zala', 'taan', 'dukha'];
+        const isMarathi = marathiKeywords.some(kw => textLower.includes(kw));
+
+        let fallbackReply = '';
+        if (isMarathi) {
+          if (textLower.includes('lonely') || textLower.includes('ekta') || textLower.includes('ekti')) {
+            fallbackReply = `Mala samajtay ki tula kiti lonely vatat aahe, ${user.name}. 💙 Me ithech tujhyasobat aahe. Ek deep breath ghe, tu ekta/ekti nahis.`;
+          } else if (textLower.includes('stress') || textLower.includes('tension') || textLower.includes('abhyas')) {
+            fallbackReply = `Tujha stress me samju shakto, ${user.name}. 🌿 Sagla ekdam sambhalaychi garaj nahi. 4 counts cha shwas ghe, me sobat ahe.`;
+          } else if (textLower.includes('vait') || textLower.includes('sad') || textLower.includes('dukha')) {
+            fallbackReply = `Tula vait vatat asel tar dabav nako thevus. 😔 Man halka karayla ithe share kar, me aiktot.`;
+          } else {
+            fallbackReply = `Me tujha bolna purn astitvane aiktot, ${user.name}. 💙 Ha tujha safe space ahe, manatla sang mala.`;
+          }
+        } else {
+          fallbackReply = `I'm listening closely to your words, ${user.name}. Whatever you're experiencing is completely valid. Would it feel soothing to take 3 slow diaphragmatic breaths together right now?`;
+          if (textLower.includes('anxious') || textLower.includes('overwhelm') || textLower.includes('stress')) {
+            fallbackReply = `I hear how heavy things feel right now. Place a gentle hand over your chest, breathe in slowly for 4 seconds, and let the future wait. You are safe in this sanctuary.`;
+          } else if (textLower.includes('tired') || textLower.includes('exhaust')) {
+            fallbackReply = `Your soul has been working so hard. Rest isn't a reward you have to earn; it is a sacred gift. Let's take today one soft step at a time.`;
+          } else if (textLower.includes('happy') || textLower.includes('good') || textLower.includes('great')) {
+            fallbackReply = `That warms my heart so much! 🌟 Let's bottle up this lovely feeling so you can return to its warmth whenever you need it.`;
+          }
         }
 
         const fallbackMsg: ChatMessage = {
@@ -238,7 +286,7 @@ export const CompanionChatScreen: React.FC<CompanionChatScreenProps> = ({
         };
 
         setMessages(prev => [...prev, fallbackMsg]);
-        setCompanionEmotion('HAPPY');
+        setCompanionEmotion('SUPPORTIVE');
 
         if (autoSpeechEnabled) {
           analytics.trackVoiceUsage('tts_playback');

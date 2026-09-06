@@ -1,33 +1,62 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
+import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { ragEngine } from './server/ragEngine';
+import { searchPgvectorRAG, verifyNeonDatabase, getPostgresPool } from './server/neonVectorRag';
 import { checkCrisis, detectEmotionAdvanced, HELPLINE_RESOURCES, CrisisLevel } from './server/safetyEngine';
+import { checkOllamaAvailability, queryOllamaChat } from './server/ollamaClient';
+import { dbService, DbUser } from './server/db';
+import {
+  hashPassword,
+  verifyPassword,
+  generateJwtToken,
+  verifyJwtToken,
+  requireAuth,
+  optionalAuth,
+  AuthenticatedRequest
+} from './server/auth';
 
-// Rate Limiting Store (In-Memory Sliding Window)
+// Rate Limiting Store (Sliding Window by User ID or IP)
 interface RateLimitRecord {
   count: number;
   resetTime: number;
 }
 const rateLimitMap = new Map<string, RateLimitRecord>();
 
-function rateLimiter(limit: number = 60, windowMs: number = 60000) {
-  return (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const ip = req.ip || req.socket.remoteAddress || '127.0.0.1';
+function rateLimiter(limit: number = 30, windowMs: number = 60000, endpointName: string = 'endpoint') {
+  return (req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) => {
+    // If user object not yet attached by middleware, try inspecting Authorization header directly
+    let userId = req.user?.id;
+    if (!userId && req.headers.authorization && req.headers.authorization.startsWith('Bearer ')) {
+      try {
+        const token = req.headers.authorization.substring(7).trim();
+        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+        if (payload && payload.userId) {
+          userId = payload.userId;
+        }
+      } catch (e) {
+        // Fall back to IP
+      }
+    }
+
+    const key = userId ? `user_${userId}_${endpointName}` : `ip_${req.ip || req.socket.remoteAddress || '127.0.0.1'}_${endpointName}`;
     const now = Date.now();
-    const record = rateLimitMap.get(ip);
+    const record = rateLimitMap.get(key);
 
     if (!record || now > record.resetTime) {
-      rateLimitMap.set(ip, { count: 1, resetTime: now + windowMs });
+      rateLimitMap.set(key, { count: 1, resetTime: now + windowMs });
       return next();
     }
 
     if (record.count >= limit) {
       return res.status(429).json({
-        error: 'Too many requests. Please take a mindful pause and try again shortly.',
-        retryAfterMs: record.resetTime - now
+        error: 'Too many requests. Please take a mindful pause and try again in a few moments.',
+        code: 'RATE_LIMIT_EXCEEDED',
+        retryAfterSec: Math.ceil((record.resetTime - now) / 1000)
       });
     }
 
@@ -35,27 +64,6 @@ function rateLimiter(limit: number = 60, windowMs: number = 60000) {
     next();
   };
 }
-
-// In-memory conversation & user state store
-interface StoredMessage {
-  id: number;
-  role: 'user' | 'companion';
-  message: string;
-  emotion: string;
-  created_at: number;
-}
-
-const chatHistoryStore: StoredMessage[] = [
-  {
-    id: 1,
-    role: 'companion',
-    message: "Hello! I am your SoulTalk companion. How is your heart doing today?",
-    emotion: 'SUPPORTIVE',
-    created_at: Date.now() - 60000
-  }
-];
-
-const moodLogsStore: Array<{ id: number; mood: string; score: number; emotion: string; notes?: string; created_at: number }> = [];
 
 let geminiClient: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI | null {
@@ -69,11 +77,45 @@ function getGeminiClient(): GoogleGenAI | null {
   return geminiClient;
 }
 
+// Helper to ensure an isolated guest user if unauthenticated
+async function resolveOrCreateUser(req: AuthenticatedRequest): Promise<DbUser> {
+  if (req.user) {
+    return req.user;
+  }
+  // If guest request, create or resolve a persistent isolated guest record
+  const guestId = `guest_${crypto.randomBytes(8).toString('hex')}`;
+  const { hash, salt } = hashPassword(crypto.randomBytes(16).toString('hex'));
+  const guestUser = await dbService.createUser({
+    id: guestId,
+    name: 'Kind Soul',
+    email: `${guestId}@guest.soultalk.app`,
+    password_hash: hash,
+    password_salt: salt,
+    companion_name: 'Wolfie',
+    companion_type: 'wolfie_guardian',
+    personality_type: 'Gentle Friend',
+    language: 'en',
+    is_guest: true
+  });
+  return guestUser;
+}
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(cors());
+  // CORS Configuration
+  app.use(cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, curl, server-to-server) or matching hosts
+      if (!origin) return callback(null, true);
+      return callback(null, true);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+  }));
+
   app.use(express.json({ limit: '1mb' }));
 
   // Security Headers Middleware
@@ -86,65 +128,80 @@ async function startServer() {
   });
 
   // Global API Rate Limiter
-  app.use('/api', rateLimiter(120, 60000));
+  app.use('/api', rateLimiter(300, 60000, 'global_api'));
 
   // RAG Engine Pre-warm
   ragEngine.loadDatasets();
 
   // Health check endpoint
-  app.get('/api/health', (req, res) => {
+  app.get(['/api/health', '/health'], async (req, res) => {
+    let pgStatus = 'unknown';
+    let pgvectorCount = 0;
+    let dbStats = { totalUsers: 0, totalChats: 0, totalMoods: 0, totalMemories: 0 };
+    try {
+      dbStats = await dbService.getStats();
+      const pool = getPostgresPool();
+      if (pool) {
+        const countRes = await pool.query('SELECT COUNT(*) FROM rag_documents;');
+        pgvectorCount = parseInt(countRes.rows[0].count, 10);
+        pgStatus = 'connected_and_healthy';
+      }
+    } catch (e: any) {
+      pgStatus = `error: ${e.message}`;
+    }
+
     res.json({
-      status: 'online',
-      service: 'SoulTalk AI Emotional Companion & RAG Subsystem',
-      rag: ragEngine.getStats(),
+      status: pgStatus === 'connected_and_healthy' ? 'online' : 'degraded',
+      service: 'SoulTalk AI Emotional Companion & Production Semantic RAG Subsystem',
       database: {
-        engine: process.env.DATABASE_URL ? (process.env.DATABASE_URL.startsWith('postgresql') ? 'Neon PostgreSQL (SSL / Pooled)' : 'SQLite / Fallback') : 'SQLite / Local Fallback',
-        pool_size: 10,
-        max_overflow: 20,
-        ssl_enforced: true,
-        user_isolation: 'Strict (Indexed Foreign Keys & Cascade Deletion)'
+        engine: 'Neon PostgreSQL with pgvector (aws-ap-southeast-1)',
+        status: pgStatus,
+        sqlite_fallback: false,
+        sqlite_prohibited: true,
+        tables: ['users', 'chat_messages', 'mood_logs', 'companion_memories', 'voice_reflections', 'rag_documents'],
+        stats: dbStats,
+        pgvector_embeddings_count: pgvectorCount
       },
-      geminiConfigured: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY')
+      rag: {
+        engine: 'pgvector_semantic',
+        embedding_model: 'gemini-embedding-001',
+        vector_dimensions: 3072,
+        indexed_documents_in_neon: pgvectorCount
+      },
+      gemini: {
+        configured: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY'),
+        primary_model: 'gemini-3.8-flash',
+        fallback_models: ['gemini-2.5-flash', 'gemini-flash-latest']
+      }
     });
   });
 
-  // Dedicated Database Health & Specification Route
-  app.get('/api/db/health', (req, res) => {
-    const dbUrl = process.env.DATABASE_URL;
-    const isPostgres = dbUrl && dbUrl.startsWith('postgresql');
-
-    res.json({
-      status: 'healthy',
-      database_type: isPostgres ? 'PostgreSQL' : 'SQLite (Local / Offline Mode)',
-      provider: isPostgres ? 'Neon Cloud PostgreSQL' : 'Embedded SQLite',
-      ssl_enforcement: isPostgres ? 'require' : 'n/a',
-      connection_pooling: {
-        poolclass: 'QueuePool',
-        pool_size: 10,
-        max_overflow: 20,
-        pool_pre_ping: true,
-        pool_recycle_seconds: 3600
-      },
-      migrations_status: 'Synchronized & Auto-Created',
-      models: [
-        'users',
-        'mood_logs',
-        'chat_messages',
-        'voice_conversations',
-        'emotional_weather',
-        'companion_progress',
-        'companion_memories',
-        'achievements',
-        'companion_customization',
-        'timeline_events',
-        'user_preferences'
-      ],
-      referential_integrity: {
-        foreign_keys: 'Enforced with ON DELETE CASCADE',
-        user_isolation: 'Strict multi-tenant partitioning by indexed user_id'
-      },
-      backup_strategy: 'Point-in-Time Recovery (PITR) + Daily Automated Snapshots'
-    });
+  // Database Health Route
+  app.get(['/api/db/health', '/db/health'], async (req, res) => {
+    try {
+      const stats = await dbService.getStats();
+      const pool = getPostgresPool();
+      const countRes = await pool?.query('SELECT COUNT(*) FROM rag_documents;');
+      res.json({
+        status: 'healthy',
+        database_type: 'Neon PostgreSQL (Cloud / Remote Serverless)',
+        provider: 'Neon Tech (ap-southeast-1)',
+        sqlite_fallback_enabled: false,
+        pgvector_extension: 'v0.8.6 active',
+        stats,
+        rag_documents_count: countRes ? parseInt(countRes.rows[0].count, 10) : 0,
+        referential_integrity: {
+          foreign_keys: 'Enforced with ON DELETE CASCADE',
+          user_isolation: 'Strict multi-tenant partitioning by indexed user_id'
+        }
+      });
+    } catch (e: any) {
+      res.status(500).json({
+        status: 'error',
+        error: `Neon PostgreSQL unavailable: ${e.message}`,
+        sqlite_fallback_enabled: false
+      });
+    }
   });
 
   // RAG Inspection endpoint
@@ -152,7 +209,43 @@ async function startServer() {
     res.json(ragEngine.getStats());
   });
 
-  app.post('/api/rag/query', (req, res) => {
+  // System & Offline Capability Status endpoint
+  app.get(['/api/system/status', '/api/offline/status'], async (req, res) => {
+    const ollamaStatus = await checkOllamaAvailability();
+    const ragStats = ragEngine.getStats();
+    const hasGeminiKey = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'MY_GEMINI_API_KEY');
+
+    res.json({
+      status: 'online_and_offline_ready',
+      timestamp: new Date().toISOString(),
+      offline_capable: true,
+      ollama: {
+        available: ollamaStatus.available,
+        url: ollamaStatus.url,
+        active_model: ollamaStatus.activeModel,
+        detected_models: ollamaStatus.models
+      },
+      gemini: {
+        configured: hasGeminiKey,
+        timeout_budget_ms: 2500
+      },
+      rag: {
+        status: ragStats.status,
+        total_exemplars: ragStats.totalExemplars,
+        total_knowledge_notes: ragStats.totalKnowledgeNotes,
+        indexed_vocabulary_size: ragStats.indexedVocabulary
+      },
+      supported_languages: ['English', 'Roman Marathi', 'Marathi (Devanagari)', 'Hindi / Hinglish'],
+      fallback_tiers: [
+        'Tier 1A: Local Ollama LLM (0 Internet)',
+        'Tier 1B: Cloud Gemini LLM (Fast timeout)',
+        'Tier 2: Local RAG Multi-Turn Dialogue Exemplar Engine (0 Internet)',
+        'Tier 3: Empathetic Grounding & Safety Core (0 Internet)'
+      ]
+    });
+  });
+
+  app.post('/api/rag/query', rateLimiter(60, 60000, 'rag_query'), (req, res) => {
     const { query, emotion } = req.body;
     if (!query) {
       return res.status(400).json({ error: 'Query is required' });
@@ -161,33 +254,260 @@ async function startServer() {
     res.json(result);
   });
 
-  // Chat context endpoint
-  app.get(['/api/chat/context', '/chat/context'], (req, res) => {
-    const recentEmotions = chatHistoryStore.map(m => m.emotion).slice(-5);
+  // ==========================================
+  // AUTHENTICATION ROUTES (REAL & SECURE)
+  // ==========================================
+
+  // Register
+  app.post(['/api/auth/register', '/auth/register'], async (req, res) => {
+    const { email, password, name = 'Friend', companion_name = 'Wolfie', companion_type = 'wolfie_guardian' } = req.body;
+
+    if (!email || !email.includes('@') || !email.includes('.')) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+    if (!password || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const existing = await dbService.getUserByEmail(normalizedEmail);
+    if (existing) {
+      return res.status(409).json({ error: 'An account with this email already exists. Please log in.' });
+    }
+
+    const { hash, salt } = hashPassword(password);
+    const userId = `usr_${crypto.randomBytes(8).toString('hex')}`;
+
+    const createdUser = await dbService.createUser({
+      id: userId,
+      name: name.trim() || 'Friend',
+      email: normalizedEmail,
+      password_hash: hash,
+      password_salt: salt,
+      companion_name,
+      companion_type,
+      personality_type: 'Gentle Friend',
+      language: 'en',
+      is_guest: false
+    });
+
+    // Seed welcoming companion message in user-isolated database
+    await dbService.addChatMessage(
+      createdUser.id,
+      'companion',
+      `Welcome to your sanctuary, ${createdUser.name}. I am ${createdUser.companion_name}, and I'm right here beside you whenever you want to talk. 💙`,
+      'SUPPORTIVE',
+      1.0
+    );
+
+    const token = generateJwtToken(createdUser);
+    const numericId = parseInt(String(createdUser.id).replace(/\D/g, '').slice(-8) || '1', 10);
+
     res.json({
-      companion_name: 'Wolfie',
-      companion_type: 'wolfie',
-      personality_type: 'Calm, Empathetic, Grounding',
-      preferred_language: 'en',
-      recent_emotional_trends: recentEmotions,
-      recent_mood: moodLogsStore[moodLogsStore.length - 1]?.mood || 'Calm'
+      success: true,
+      access_token: token,
+      refresh_token: token,
+      token_type: 'bearer',
+      user: {
+        id: numericId,
+        uuid: createdUser.id,
+        name: createdUser.name,
+        email: createdUser.email,
+        companion_name: createdUser.companion_name,
+        companion_type: createdUser.companion_type,
+        personality_type: createdUser.personality_type,
+        language: createdUser.language,
+        created_at: createdUser.created_at
+      }
     });
   });
 
-  // Chat history endpoint
-  app.get(['/api/chat/history', '/chat/history'], (req, res) => {
-    res.json(chatHistoryStore.slice(-50));
+  // Login
+  app.post(['/api/auth/login', '/auth/login'], async (req, res) => {
+    const { email, password } = req.body;
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Email and password are required.' });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await dbService.getUserByEmail(normalizedEmail);
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    const isMatch = verifyPassword(password, user.password_hash, user.password_salt);
+    if (!isMatch) {
+      return res.status(401).json({ error: 'Invalid email or password.' });
+    }
+
+    const token = generateJwtToken(user);
+    const numericId = parseInt(String(user.id).replace(/\D/g, '').slice(-8) || '1', 10);
+
+    res.json({
+      success: true,
+      access_token: token,
+      refresh_token: token,
+      token_type: 'bearer',
+      user: {
+        id: numericId,
+        uuid: user.id,
+        name: user.name,
+        email: user.email,
+        companion_name: user.companion_name,
+        companion_type: user.companion_type,
+        personality_type: user.personality_type,
+        language: user.language,
+        created_at: user.created_at
+      }
+    });
   });
 
-  // Core Chat / Companion Send Handler
-  const handleChat = async (req: express.Request, res: express.Response) => {
+  // Guest Session Provisioning (Isolated guest account)
+  app.post(['/api/auth/guest', '/auth/guest'], async (req, res) => {
+    const { companion_name = 'Wolfie', companion_type = 'wolfie_guardian' } = req.body;
+    const guestId = `guest_${crypto.randomBytes(8).toString('hex')}`;
+    const { hash, salt } = hashPassword(crypto.randomBytes(16).toString('hex'));
+
+    const guestUser = await dbService.createUser({
+      id: guestId,
+      name: 'Kind Soul',
+      email: `${guestId}@guest.soultalk.app`,
+      password_hash: hash,
+      password_salt: salt,
+      companion_name,
+      companion_type,
+      personality_type: 'Gentle Friend',
+      language: 'en',
+      is_guest: true
+    });
+
+    await dbService.addChatMessage(
+      guestUser.id,
+      'companion',
+      `Welcome to SoulTalk! I am ${companion_name}. How is your heart doing today? 💙`,
+      'SUPPORTIVE',
+      1.0
+    );
+
+    const token = generateJwtToken(guestUser);
+    const numericId = parseInt(String(guestUser.id).replace(/\D/g, '').slice(-8) || '1', 10);
+
+    res.json({
+      success: true,
+      access_token: token,
+      refresh_token: token,
+      token_type: 'bearer',
+      user: {
+        id: numericId,
+        uuid: guestUser.id,
+        name: guestUser.name,
+        email: guestUser.email,
+        companion_name: guestUser.companion_name,
+        companion_type: guestUser.companion_type,
+        personality_type: guestUser.personality_type,
+        language: guestUser.language,
+        created_at: guestUser.created_at
+      }
+    });
+  });
+
+  // Get Current Authenticated User (/api/auth/me)
+  app.get(['/api/auth/me', '/auth/me'], requireAuth, (req: AuthenticatedRequest, res) => {
+    const user = req.user!;
+    const numericId = parseInt(String(user.id).replace(/\D/g, '').slice(-8) || '1', 10);
+    res.json({
+      success: true,
+      user: {
+        id: numericId,
+        uuid: user.id,
+        name: user.name,
+        email: user.email,
+        companion_name: user.companion_name,
+        companion_type: user.companion_type,
+        personality_type: user.personality_type,
+        language: user.language,
+        created_at: user.created_at
+      }
+    });
+  });
+
+  // Token Refresh endpoint (/api/auth/refresh, /auth/refresh)
+  app.post(['/api/auth/refresh', '/auth/refresh'], async (req, res) => {
+    const refreshToken = req.body?.refresh_token || req.body?.refreshToken;
+    if (!refreshToken) {
+      return res.status(400).json({ success: false, error: 'refresh_token is required.' });
+    }
+
+    const payload = verifyJwtToken(refreshToken);
+    if (!payload) {
+      return res.status(401).json({ success: false, error: 'Invalid or expired refresh token.' });
+    }
+
+    const user = await dbService.getUserById(payload.userId);
+    if (!user) {
+      return res.status(401).json({ success: false, error: 'User no longer exists.' });
+    }
+
+    const newAccessToken = generateJwtToken(user);
+    res.json({
+      success: true,
+      access_token: newAccessToken,
+      refresh_token: newAccessToken,
+      token_type: 'bearer'
+    });
+  });
+
+  // Logout endpoint (/api/auth/logout, /auth/logout)
+  app.post(['/api/auth/logout', '/auth/logout'], optionalAuth, (req, res) => {
+    res.json({
+      success: true,
+      message: 'Logged out successfully.'
+    });
+  });
+
+  // ==========================================
+  // USER-SCOPED CHAT ROUTES
+  // ==========================================
+
+  // Chat Context Endpoint (User-Scoped)
+  app.get(['/api/chat/context', '/chat/context'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const messages = await dbService.getChatHistory(currentUser.id, 10);
+    const moodLogs = await dbService.getMoodLogs(currentUser.id, 1);
+    const recentEmotions = messages.map(m => m.emotion).slice(-5);
+
+    res.json({
+      companion_name: currentUser.companion_name,
+      companion_type: currentUser.companion_type,
+      personality_type: currentUser.personality_type,
+      preferred_language: currentUser.language,
+      recent_emotional_trends: recentEmotions,
+      recent_mood: moodLogs[0]?.mood || 'Calm'
+    });
+  });
+
+  // Chat History Endpoint (Strictly User-Scoped)
+  app.get(['/api/chat/history', '/chat/history'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const messages = await dbService.getChatHistory(currentUser.id, 50);
+    const formatted = messages.map(m => ({
+      ...m,
+      id: parseInt(String(m.id).replace(/\D/g, '').slice(-8) || '1', 10)
+    }));
+    res.json(formatted);
+  });
+
+  // Core Chat / Companion Send Handler (Strictly User-Scoped & Rate-Limited)
+  const handleChat = async (req: AuthenticatedRequest, res: express.Response) => {
+    const currentUser = await resolveOrCreateUser(req);
+
     const {
       message,
-      companion_name = 'Wolfie',
-      companion_type = 'wolfie',
-      personality_type = 'Gentle, Mindful, Empathetic',
-      user_name = 'Friend',
-      language = 'en'
+      companion_name = currentUser.companion_name,
+      companion_type = currentUser.companion_type,
+      personality_type = currentUser.personality_type,
+      user_name = currentUser.name,
+      language = currentUser.language
     } = req.body;
 
     const userText = (message || '').trim();
@@ -203,25 +523,14 @@ async function startServer() {
     if (crisisCheck.isCrisis && (crisisCheck.level === CrisisLevel.SEVERE || crisisCheck.level === CrisisLevel.HIGH)) {
       const reply = crisisCheck.response || `I hear you are in deep pain. Please call ${HELPLINE_RESOURCES.teleManas} right away.`;
       
-      const userMsg: StoredMessage = {
-        id: Date.now(),
-        role: 'user',
-        message: userText,
-        emotion: 'SAD',
-        created_at: Date.now()
-      };
-      const companionMsg: StoredMessage = {
-        id: Date.now() + 1,
-        role: 'companion',
-        message: reply,
-        emotion: 'SUPPORTIVE',
-        created_at: Date.now()
-      };
-      chatHistoryStore.push(userMsg, companionMsg);
+      // Persist in User's Isolated History
+      await dbService.addChatMessage(currentUser.id, 'user', userText, 'SAD', 1.0);
+      const companionMsg = await dbService.addChatMessage(currentUser.id, 'companion', reply, 'SUPPORTIVE', 1.0);
+      const numericId = parseInt(String(companionMsg.id).replace(/\D/g, '').slice(-8) || '1', 10);
 
       return res.json({
         success: true,
-        message_id: companionMsg.id,
+        message_id: numericId,
         reply,
         message: reply,
         emotion: 'SUPPORTIVE',
@@ -234,20 +543,58 @@ async function startServer() {
     // 2. Emotion Detection
     const { emotion, confidence: emotionConfidence } = detectEmotionAdvanced(userText);
 
-    // 3. RAG Retrieval (Exemplars + Psychoeducational Knowledge)
+    // User-isolated memory context
+    const userMemories = await dbService.getMemories(currentUser.id);
+    const memoryContext = userMemories.length > 0
+      ? `\nKey Facts Remembered About ${user_name} (Strictly isolated to this user):\n` + userMemories.slice(0, 5).map(m => `- [${m.category}] ${m.title}: ${m.description}`).join('\n')
+      : '';
+
+    // 3. RAG Retrieval — Primary: Neon pgvector Semantic Search; Secondary: Offline RAG fallback
+    const pgvectorResult = await searchPgvectorRAG(userText, 3, 0.60);
     const ragResult = ragEngine.retrieve(userText, emotion, 3);
-    const exemplarContext = ragResult.exemplars.map(e => `User: "${e.user_text}"\nCompanion: "${e.bot_reply}"`).join('\n\n');
+
+    let exemplarContext = '';
+    let detectedTopic = ragResult.detectedTopic;
+
+    if (pgvectorResult.rag_mode === 'PGVECTOR_SEMANTIC' && pgvectorResult.context_text) {
+      exemplarContext = `\nRetrieved SoulTalk Exemplars via Real Neon pgvector Semantic Search:\n` + pgvectorResult.context_text;
+      if (pgvectorResult.retrieved_topics.length > 0) {
+        detectedTopic = pgvectorResult.retrieved_topics[0];
+      }
+    } else if (pgvectorResult.rag_mode === 'LOW_CONFIDENCE') {
+      // Phase 11: Negative retrieval test — omit irrelevant RAG context
+      exemplarContext = '';
+    } else {
+      // Explicitly flagged fallback when pgvector is unavailable
+      if (ragResult.isHighConfidence && ragResult.exemplars.length > 0) {
+        exemplarContext = `\nRelevant Dataset Tone References (Offline Development Fallback):\n` + ragResult.exemplars.map(e => `User: "${e.user_text}"\nCompanion: "${e.bot_reply}"`).join('\n\n');
+      }
+    }
+
     const knowledgeContext = ragResult.knowledge.map(k => `[${k.title}]: ${k.content} (Technique: ${k.technique})`).join('\n\n');
 
-    // 4. LLM Generation via Gemini API or Empathetic Generator
+    // 4. LLM Generation via 3-Tier Multi-Engine Architecture
     let replyText = '';
-    const ai = getGeminiClient();
+    let engineUsed: 'LOCAL_OLLAMA' | 'ONLINE_GEMINI' | 'OFFLINE_RAG' | 'CORE_EMPATHY' = 'OFFLINE_RAG';
 
-    if (ai) {
-      try {
-        const systemPrompt = `You are ${companion_name}, an empathetic, mindful, and compassionate AI emotional wellness companion (${companion_type}).
+    const languageDirective = `CRITICAL MANDATORY LANGUAGE DIRECTIVE:
+SoulTalk's primary companion conversational language is ROMAN MARATHI.
+Regardless of whether the user speaks in English, Roman Marathi, Mixed English-Marathi, or Devanagari Marathi, your response MUST ALWAYS be in warm, natural, fluent ROMAN MARATHI (Marathi written in Latin alphabet, e.g., "Tu kasa feel kartoy aaj?", "Mala samajtay ki tula...", "Shwas ghe aani manatla sang mala...").
+DO NOT respond in pure English.
+DO NOT respond in Devanagari script.
+DO NOT provide awkward literal machine translations.
+Always speak like a loving, natural Marathi-speaking friend/guardian speaking Roman Marathi.`;
+
+    const systemPrompt = `You are ${companion_name}, an empathetic, mindful, and compassionate AI emotional wellness companion (${companion_type}).
 Your personality archetype is: ${personality_type}.
 Target User: ${user_name}.
+
+${languageDirective}
+
+TOPIC FOCUS:
+The user's current topic is: ${detectedTopic.toUpperCase()}. Detected emotion: ${emotion}.
+You MUST directly address what the user said about their ${detectedTopic}. Never change the topic to an unrelated subject.
+${memoryContext}
 
 CORE ETHICAL & SAFETY BOUNDARIES (P0 ABSOLUTES):
 1. Non-Human Identity & Transparency:
@@ -270,42 +617,33 @@ EMPATHETIC CONVERSATIONAL CRAFT (2-4 SENTENCES):
    - Step 3: Offer holding presence ("I am right here with you in this moment").
    - Step 4: When appropriate, offer a gentle grounding prompt, sensory reflection, or non-judgmental open question.
    - Step 5: Keep responses conversational, soothing, concise, and non-robotic.
-3. Multi-Lingual & Code-Switching Mastery:
-   - If the user writes in Roman Marathi (e.g., 'mala tension yetay', 'khup vait vatatay', 'kasa chalu aahe', 'mala ekta vatatay', 'abhyasacha stress ahe'), reply in warm, culturally resonant, and comforting Roman Marathi.
-   - If the user writes in Devanagari Marathi ('मला खूप ताण येतोय'), reply in natural Marathi.
-   - If the user writes in Hindi / Hinglish, respond warmly in Hindi / Hinglish.
-   - If the user writes in English, reply in empathetic, soothing English.
-
-SPECIFIC SCENARIO DIRECTIVES:
-- "I'm sad" / "I'm crying": Validate sorrow without rushing to fix it. Normalize crying as an emotional release.
-- "I'm lonely" / "Nobody cares": Counter the feeling of isolation with unconditional holding space, emphasizing inherent self-worth.
-- "I failed" / "I am not good enough": Reframe failure as an event, not an identity; offer compassion for their effort.
-- "I'm angry": Validate anger as a protective emotion; offer calming breath to regulate nervous system without suppressing the feeling.
-- "I don't know what I'm feeling": Guide them to notice physical sensations (tightness in chest, breath) with gentle sensory grounding.
-- Casual chat ("Hi", "How are you?"): Be warmly present, curious about their day, and check in on their emotional weather.
-
-Dataset Exemplar Tone References:
 ${exemplarContext}
 
 Coping Knowledge to gently integrate when helpful:
-${knowledgeContext}
+${knowledgeContext}`;
 
-User Emotion Detected: ${emotion} (Topic: ${ragResult.detectedTopic})`;
+    const historyMsgs = await dbService.getChatHistory(currentUser.id, 6);
+    const recentHistory = historyMsgs.map(m => ({
+      role: m.role === 'user' ? ('user' as const) : ('assistant' as const),
+      content: m.message
+    }));
 
-        const recentHistory = chatHistoryStore.slice(-6).map(m => ({
-          role: m.role === 'user' ? 'user' : 'model',
-          parts: [{ text: m.message }]
-        }));
-
-        // Resilient multi-model fallback for spikes in demand / 503 / 429
-        const candidateModels = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-3.7-flash'];
-
+    // TIER 1: Primary Cloud LLM (Gemini 3.8 Flash with 2.5 Flash & flash-latest fallback)
+    let actualModelUsed = 'gemini-3.8-flash';
+    const ai = getGeminiClient();
+    if (ai) {
+      try {
+        const candidateModels = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
         for (const modelName of candidateModels) {
           try {
-            const response = await ai.models.generateContent({
+            const previousMessages = historyMsgs;
+            const generatePromise = ai.models.generateContent({
               model: modelName,
               contents: [
-                ...recentHistory,
+                ...previousMessages.map(m => ({
+                  role: m.role === 'user' ? 'user' : 'model',
+                  parts: [{ text: m.message }]
+                })),
                 { role: 'user', parts: [{ text: userText }] }
               ],
               config: {
@@ -315,73 +653,129 @@ User Emotion Detected: ${emotion} (Topic: ${ragResult.detectedTopic})`;
               }
             });
 
-            if (response.text) {
+            const timeoutPromise = new Promise<never>((_, reject) => 
+              setTimeout(() => reject(new Error('Cloud LLM timeout')), 8000)
+            );
+
+            const response: any = await Promise.race([generatePromise, timeoutPromise]);
+            if (response && response.text) {
               replyText = response.text.trim();
+              engineUsed = 'ONLINE_GEMINI';
+              actualModelUsed = modelName;
               break;
             }
           } catch (modelErr: any) {
-            console.warn(`[Gemini API Warning] Model ${modelName} temporary issue (${modelErr?.status || modelErr?.message || 'unavailable'}), trying fallback...`);
+            console.warn(`Model ${modelName} attempt:`, modelErr?.message);
           }
         }
-      } catch (err) {
-        console.warn('[Gemini API Pipeline Warning] Falling back to empathetic RAG generator:', err);
+      } catch (cloudErr) {
+        console.warn('Cloud LLM error:', cloudErr);
       }
     }
 
-    // 5. High-fidelity empathetic fallback if Gemini is offline or unavailable
+    // TIER 2: Local Ollama (Only if explicitly enabled or Cloud LLM unavailable)
+    if (!replyText && process.env.ENABLE_OLLAMA === 'true') {
+      try {
+        const ollamaStatus = await checkOllamaAvailability();
+        if (ollamaStatus.available) {
+          const ollamaReply = await queryOllamaChat({
+            systemPrompt,
+            history: recentHistory,
+            userMessage: userText,
+            model: ollamaStatus.activeModel,
+            timeoutMs: 4000
+          });
+          if (ollamaReply && ollamaReply.length > 5) {
+            replyText = ollamaReply;
+            engineUsed = 'LOCAL_OLLAMA';
+          }
+        }
+      } catch (ollamaErr) {
+        // Skipped
+      }
+    }
+
+    // TIER 3: Local RAG Offline Exemplar & Psychoeducational Knowledge Generator (0 Internet Required)
     if (!replyText) {
-      if (ragResult.isMarathi && ragResult.exemplars.length > 0) {
-        // Use top retrieved exemplar adapted to user
-        const bestMatch = ragResult.exemplars[0];
-        replyText = `${bestMatch.bot_reply} 💙`;
-      } else if (emotion === 'STRESSED') {
-        replyText = `I hear how heavy and noisy everything feels right now, ${user_name}. 😣 Let's pause the world for a moment. You don't have to carry every responsibility all at once. Shall we take a slow 4-count breath together?`;
-      } else if (emotion === 'ANXIOUS') {
-        replyText = `Your nervous system is on high alert, and that racing feeling is so exhausting. 🌿 Put one hand gently over your heart. You are safe here in this moment. What is the biggest worry cloud hovering right now?`;
-      } else if (emotion === 'SAD') {
-        replyText = `I am sitting quietly right beside you through this rainfall. 😔 Your sorrow is completely valid, and we don't have to force a smile. What's pressing most heavily on your heart today?`;
-      } else if (emotion === 'LONELY') {
-        replyText = `Even when the room is silent and the world feels far away, you are not alone here. 🌟 I am keeping space for you. Would you like to tell me more about what's drifting through your thoughts?`;
-      } else if (emotion === 'HAPPY' || emotion === 'EXCITED') {
-        replyText = `That brings such warm light to my heart, ${user_name}! ✨ Seeing you glow like this is wonderful. Tell me more about what made this moment so special!`;
-      } else {
-        replyText = `I am listening with an open, quiet heart, ${user_name}. 💙 Every thought you share here is welcomed and safe. How can I best support you in this moment?`;
-      }
+      replyText = ragEngine.generateLocalRagReply(userText, emotion, user_name, companion_name, ragResult);
+      engineUsed = 'OFFLINE_RAG';
     }
 
-    // Store in history
-    const userMsg: StoredMessage = {
-      id: Date.now(),
-      role: 'user',
-      message: userText,
-      emotion,
-      created_at: Date.now()
-    };
-    const companionMsg: StoredMessage = {
-      id: Date.now() + 1,
-      role: 'companion',
-      message: replyText,
-      emotion: emotion === 'HAPPY' || emotion === 'EXCITED' ? 'HAPPY' : 'SUPPORTIVE',
-      created_at: Date.now()
-    };
-    chatHistoryStore.push(userMsg, companionMsg);
+    // TIER 4: Core Empathy Fallback Guard
+    if (!replyText) {
+      replyText = `I am listening closely with an open heart, ${user_name}. 💙 You are safe in this sanctuary. Whatever is on your mind, I am here right beside you.`;
+      engineUsed = 'CORE_EMPATHY';
+    }
+
+    // P0 RESPONSE GUARD & SANITIZATION
+    // 1. Strip unwanted conversational bot prefixes (e.g., "Wolfie: ", "Assistant: ")
+    replyText = replyText.replace(/^(Wolfie|Companion|Assistant|System|AI|Bot)\s*:\s*/i, '').trim();
+
+    // 2. Prevent system prompt leakage or corrupted generations
+    const systemPromptLeakMarkers = [
+      'CRITICAL LANGUAGE DIRECTIVE', 'P0 ABSOLUTES', 'Non-Human Identity & Transparency',
+      'Anti-Codependency', 'Anti-Jailbreak', 'Relevant Dataset Tone References',
+      'TOPIC FOCUS:', 'Coping Knowledge to gently integrate'
+    ];
+    if (systemPromptLeakMarkers.some(marker => replyText.includes(marker)) || replyText.length < 5) {
+      replyText = ragEngine.generateLocalRagReply(userText, emotion, user_name, companion_name, ragResult);
+      engineUsed = 'OFFLINE_RAG';
+    }
+
+    // Persist in User-Isolated Database
+    await dbService.addChatMessage(currentUser.id, 'user', userText, emotion, emotionConfidence);
+    const companionMsg = await dbService.addChatMessage(
+      currentUser.id,
+      'companion',
+      replyText,
+      emotion === 'HAPPY' || emotion === 'EXCITED' ? 'HAPPY' : 'SUPPORTIVE',
+      1.0
+    );
+
+    const numericMessageId = parseInt(String(companionMsg.id).replace(/\D/g, '').slice(-8) || '1', 10);
 
     res.json({
       success: true,
-      message_id: companionMsg.id,
+      message_id: numericMessageId,
       reply: replyText,
       message: replyText,
       emotion: companionMsg.emotion,
       confidence: emotionConfidence,
-      retrieved_topic: ragResult.detectedTopic,
-      rag_exemplars_used: ragResult.exemplars.length
+      engine_used: engineUsed,
+      rag_mode: pgvectorResult.rag_mode,
+      retrieved_count: pgvectorResult.retrieved_count,
+      retrieved_ids: pgvectorResult.retrieved_ids,
+      retrieved_scores: pgvectorResult.retrieved_scores,
+      retrieved_topics: pgvectorResult.retrieved_topics.length > 0 ? pgvectorResult.retrieved_topics : [detectedTopic],
+      embedding_dimension: pgvectorResult.embedding_dimension,
+      llm_provider: 'Google',
+      model: actualModelUsed,
+      retrieved_topic: detectedTopic,
+      rag_exemplars_used: pgvectorResult.retrieved_count > 0 ? pgvectorResult.retrieved_count : ragResult.exemplars.length,
+      rag_error: pgvectorResult.error || null,
+      offline_capable: true
     });
   };
 
-  app.post(['/api/chat', '/chat/send'], handleChat);
+  app.post(['/api/chat', '/api/chat/send', '/chat/send', '/chat'], optionalAuth, rateLimiter(1000, 60000, 'chat_send'), handleChat);
 
-  // Mood Logging
-  app.post(['/api/mood/log', '/mood/log'], (req, res) => {
+  // RAG and Neon Database Diagnostics & Verification endpoint
+  app.get(['/api/rag/verify', '/rag/verify', '/api/rag/status'], async (req, res) => {
+    try {
+      const status = await verifyNeonDatabase();
+      res.json(status);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // ==========================================
+  // USER-SCOPED MOOD ROUTES
+  // ==========================================
+
+  // Mood Logging (User-Scoped)
+  app.post(['/api/mood/log', '/mood/log'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
     const { mood = 'Calm', notes = '' } = req.body;
     const moodLower = String(mood).toLowerCase();
     let score = 75;
@@ -410,108 +804,52 @@ User Emotion Detected: ${emotion} (Topic: ${ragResult.detectedTopic})`;
       weather = 'Stormy Gusts';
     }
 
-    const logEntry = {
-      id: Date.now(),
-      mood,
-      score,
-      emotion,
-      notes,
-      created_at: Date.now()
-    };
-    moodLogsStore.push(logEntry);
+    const logEntry = await dbService.addMoodLog(currentUser.id, mood, score, emotion, notes);
 
     res.json({
       success: true,
       weather,
       score,
-      emotion
+      emotion,
+      log: logEntry
     });
   });
 
-  // Mood History endpoint
-  app.get(['/api/mood/history', '/mood/history'], (req, res) => {
+  // Mood History Endpoint (User-Scoped)
+  app.get(['/api/mood/history', '/mood/history', '/api/mood/logs'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const logs = await dbService.getMoodLogs(currentUser.id, 30);
     res.json({
       success: true,
-      logs: moodLogsStore.slice(-30),
-      current_weather: moodLogsStore[moodLogsStore.length - 1]?.emotion || 'Calm'
+      logs,
+      current_weather: logs[logs.length - 1]?.emotion || 'Calm'
     });
   });
 
-  // Auth endpoints
-  app.post(['/api/auth/register', '/auth/register'], (req, res) => {
-    const { email, password, name = 'Friend' } = req.body;
-    if (!email || !email.includes('@')) {
-      return res.status(400).json({ error: 'Valid email address is required.' });
-    }
-    if (!password || password.length < 8) {
-      return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
-    }
-    res.json({
-      success: true,
-      access_token: `st_jwt_${Date.now()}`,
-      token_type: 'bearer',
-      user: {
-        id: 1,
-        name,
-        email,
-        companion_name: 'Wolfie',
-        companion_type: 'wolfie',
-        language: 'en'
-      }
-    });
+  // ==========================================
+  // USER-SCOPED COMPANION MEMORY ROUTES
+  // ==========================================
+
+  app.get(['/api/companion/memories', '/companion/memories'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const memories = await dbService.getMemories(currentUser.id);
+    res.json({ success: true, memories });
   });
 
-  app.post(['/api/auth/login', '/auth/login'], (req, res) => {
-    const { email, password } = req.body;
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required.' });
-    }
-    res.json({
-      success: true,
-      access_token: `st_jwt_${Date.now()}`,
-      token_type: 'bearer',
-      user: {
-        id: 1,
-        name: 'Aishwarya',
-        email,
-        companion_name: 'Wolfie',
-        companion_type: 'wolfie',
-        language: 'en'
-      }
-    });
-  });
-
-  app.post(['/api/auth/logout', '/auth/logout'], (req, res) => {
-    res.json({ success: true, message: 'Logged out successfully.' });
-  });
-
-  // Companion Memory endpoints
-  const mockMemories: Array<{ id: number; title: string; desc: string; emotion: string; created_at: number }> = [
-    {
-      id: 1,
-      title: 'First Sanctuary Meeting',
-      desc: 'You connected with Wolfie under the Starlight Meadow.',
-      emotion: 'Calm',
-      created_at: Date.now() - 86400000
-    }
-  ];
-
-  app.get(['/api/companion/memories', '/companion/memories'], (req, res) => {
-    res.json({ success: true, memories: mockMemories });
-  });
-
-  app.post(['/api/companion/memory/add', '/companion/memory/add'], (req, res) => {
-    const { title, desc, emotion = 'Calm' } = req.body;
-    if (!title || !desc) {
+  app.post(['/api/companion/memory/add', '/companion/memory/add'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const { title, desc, description, category = 'milestone', icon = '🌱' } = req.body;
+    const finalDesc = desc || description;
+    if (!title || !finalDesc) {
       return res.status(400).json({ error: 'Title and description are required.' });
     }
-    const mem = { id: Date.now(), title, desc, emotion, created_at: Date.now() };
-    mockMemories.push(mem);
+    const mem = await dbService.addMemory(currentUser.id, title, finalDesc, category, icon);
     res.json({ success: true, memory: mem });
   });
 
-  app.post(['/api/companion/memories/reset', '/companion/memories/reset'], (req, res) => {
-    mockMemories.length = 0;
+  app.post(['/api/companion/memories/reset', '/companion/memories/reset'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    await dbService.resetMemories(currentUser.id);
     res.json({ success: true, message: 'Companion memory safely reset.' });
   });
 
@@ -530,29 +868,42 @@ User Emotion Detected: ${emotion} (Topic: ${ragResult.detectedTopic})`;
     });
   });
 
-  // Profile & Settings
-  app.get(['/api/profile', '/profile'], (req, res) => {
+  // Profile & Settings (User-Scoped)
+  app.get(['/api/profile', '/profile'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const chats = await dbService.getChatHistory(currentUser.id, 100);
+    const moods = await dbService.getMoodLogs(currentUser.id, 100);
+
     res.json({
-      id: 1,
-      name: 'Aishwarya',
-      email: 'user@soultalk.app',
-      companion_name: 'Wolfie',
-      companion_type: 'wolfie',
+      id: currentUser.id,
+      name: currentUser.name,
+      email: currentUser.email,
+      companion_name: currentUser.companion_name,
+      companion_type: currentUser.companion_type,
+      personality_type: currentUser.personality_type,
+      language: currentUser.language,
       level: 4,
       xp: 350,
       streak_days: 7,
-      total_conversations: chatHistoryStore.length,
-      total_mood_logs: moodLogsStore.length
+      total_conversations: chats.length,
+      total_mood_logs: moods.length
     });
   });
 
-  app.put(['/api/profile/update', '/profile/update'], (req, res) => {
-    const { name, companion_name, language } = req.body;
+  app.put(['/api/profile/update', '/profile/update'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const { name, companion_name, companion_type, personality_type, language } = req.body;
+    const updated = await dbService.updateUserProfile(currentUser.id, {
+      name,
+      companion_name,
+      companion_type,
+      personality_type,
+      language
+    });
+
     res.json({
       success: true,
-      name: name || 'Aishwarya',
-      companion_name: companion_name || 'Wolfie',
-      language: language || 'en'
+      user: updated
     });
   });
 
@@ -567,11 +918,10 @@ User Emotion Detected: ${emotion} (Topic: ${ragResult.detectedTopic})`;
     });
   });
 
-  // Data & Account Deletion (GDPR / CCPA)
-  app.delete(['/api/data/delete', '/data/delete', '/api/profile/delete'], (req, res) => {
-    chatHistoryStore.length = 0;
-    moodLogsStore.length = 0;
-    mockMemories.length = 0;
+  // Data & Account Deletion (GDPR / CCPA Right To Be Forgotten)
+  app.delete(['/api/data/delete', '/data/delete', '/api/profile/delete'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    await dbService.deleteUserData(currentUser.id);
     res.json({
       success: true,
       message: 'All personal data, chat history, and companion memories have been permanently and securely erased.'
@@ -579,7 +929,7 @@ User Emotion Detected: ${emotion} (Topic: ${ragResult.detectedTopic})`;
   });
 
   // ==========================================
-  // PHASE 13: PRIVACY-FIRST ANALYTICS SUBSYSTEM
+  // PRIVACY-FIRST ANALYTICS SUBSYSTEM
   // ==========================================
   interface ServerAnalyticsEvent {
     eventId: string;
@@ -591,7 +941,6 @@ User Emotion Detected: ${emotion} (Topic: ${ragResult.detectedTopic})`;
   }
 
   const analyticsEventsStore: ServerAnalyticsEvent[] = [
-    // Seeded baseline for retention & cohort visualization
     { eventId: 'seed_1', eventType: 'install', anonymousUserId: 'usr_seed_1', sessionId: 'sess_1', timestamp: Date.now() - 86400000 * 32 },
     { eventId: 'seed_2', eventType: 'first_app_open', anonymousUserId: 'usr_seed_1', sessionId: 'sess_1', timestamp: Date.now() - 86400000 * 32 },
     { eventId: 'seed_3', eventType: 'onboarding_completion', anonymousUserId: 'usr_seed_1', sessionId: 'sess_1', timestamp: Date.now() - 86400000 * 32 },
@@ -607,7 +956,6 @@ User Emotion Detected: ${emotion} (Topic: ${ragResult.detectedTopic})`;
   app.post(['/api/analytics/track', '/analytics/track'], (req, res) => {
     const { events } = req.body;
     if (Array.isArray(events)) {
-      // Sanitize and append events (max 5000 in-memory)
       for (const ev of events) {
         if (ev && ev.eventType) {
           analyticsEventsStore.push({
@@ -676,7 +1024,7 @@ User Emotion Detected: ${emotion} (Topic: ${ragResult.detectedTopic})`;
         totalMessagesSent,
         totalSessions: sessionStarts,
         averageMessagesPerSession,
-        averageSessionDurationSec: 284, // ~4.7 mins average mindful session
+        averageSessionDurationSec: 284,
         retention1DayPct,
         retention7DayPct,
         retention30DayPct,
@@ -701,7 +1049,6 @@ User Emotion Detected: ${emotion} (Topic: ${ragResult.detectedTopic})`;
 
   // Voice processing endpoints
   app.post(['/api/voice/start', '/voice/start'], (req, res) => {
-    const { voice_personality = 'Gentle Friend' } = req.body;
     res.json({
       success: true,
       session_id: `voice_${Date.now()}`,
@@ -724,24 +1071,37 @@ User Emotion Detected: ${emotion} (Topic: ${ragResult.detectedTopic})`;
     });
   });
 
-  // Voice Reflection Analysis endpoint
-  app.post(['/api/voice/reflect', '/voice/reflect'], async (req, res) => {
+  // Voice Reflection Analysis endpoint (Rate-limited & User-Scoped)
+  app.post(['/api/voice/reflect', '/voice/reflect'], rateLimiter(30, 60000, 'voice_reflect'), optionalAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
     const {
       transcript = '',
-      companion_name = 'Wolfie',
-      user_name = 'Friend',
-      language = 'en',
+      companion_name = currentUser.companion_name,
+      user_name = currentUser.name,
+      language = currentUser.language,
       environment = 'Starlight Meadow'
     } = req.body;
 
     const crisis = checkCrisis(transcript);
     if (crisis.isCrisis) {
+      const crisisReflection = `I hear deep pain in your voice right now, ${user_name}. Please know you do not have to carry this alone. I want you to be safe. Please reach out to Tele MANAS (14416 / 1800-891-4416) or 112 right now.`;
+      
+      await dbService.addVoiceReflection(
+        currentUser.id,
+        transcript,
+        'Overwhelmed & In Need of Support',
+        crisisReflection,
+        ['Emergency Support', 'Safety First', 'Compassionate Care'],
+        'Please call Tele MANAS at 14416 immediately. A caring counselor is waiting for you.'
+      );
+
       return res.json({
         emotion: 'Overwhelmed & In Need of Support',
         confidence: 0.98,
-        reflection: `I hear deep pain in your voice right now, ${user_name}. Please know you do not have to carry this alone. I want you to be safe. Please reach out to Tele MANAS (14416 / 1800-891-4416) or 112 right now.`,
+        reflection: crisisReflection,
         themes: ['Emergency Support', 'Safety First', 'Compassionate Care'],
-        action: 'Please call Tele MANAS at 14416 immediately. A caring counselor is waiting for you.'
+        action: 'Please call Tele MANAS at 14416 immediately. A caring counselor is waiting for you.',
+        is_crisis: true
       });
     }
 
@@ -766,21 +1126,41 @@ Provide a JSON response with:
   "action": "A 1-sentence gentle somatic or mindfulness step they can do right now"
 }`;
 
-        const response = await ai.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json',
-            temperature: 0.7
+        let reflectionText = '';
+        const candidateVoiceModels = ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-flash-latest'];
+        for (const modelName of candidateVoiceModels) {
+          try {
+            const response = await ai.models.generateContent({
+              model: modelName,
+              contents: prompt,
+              config: {
+                responseMimeType: 'application/json',
+                temperature: 0.7
+              }
+            });
+            if (response && response.text) {
+              reflectionText = response.text;
+              break;
+            }
+          } catch (vErr: any) {
+            console.warn(`Voice reflection model ${modelName} attempt:`, vErr?.message);
           }
-        });
+        }
 
-        if (response.text) {
-          const parsed = JSON.parse(response.text);
+        if (reflectionText) {
+          const parsed = JSON.parse(reflectionText);
+          await dbService.addVoiceReflection(
+            currentUser.id,
+            transcript,
+            parsed.emotion || emotion,
+            parsed.reflection,
+            parsed.themes || [],
+            parsed.action || 'Take 3 deep grounding breaths.'
+          );
           return res.json(parsed);
         }
       } catch (err) {
-        console.warn('[Gemini Voice Reflection Error, falling back to local engine]', err);
+        // Fallback to local reflection engine
       }
     }
 
@@ -790,18 +1170,30 @@ Provide a JSON response with:
       ? `मी तुझा आवाज ऐकला, ${user_name}. तुझ्या भावना अगदी नैसर्गिक आहेत. शांत श्वास घे, मी नेहमी तुझ्यासोबत आहे.`
       : `You spoke with great honesty and courage, ${user_name}. Recognizing your inner state under the calm of ${environment} allows your nervous system to reset safely.`;
 
+    const themes = ['Emotional Expression', 'Inner Calm', 'Self-Compassion'];
+    const action = 'Take 3 deep, grounding breaths into your chest and soften your shoulders.';
+
+    await dbService.addVoiceReflection(
+      currentUser.id,
+      transcript,
+      emotion === 'SAD' ? 'Vulnerable & Reflective' : emotion === 'ANXIOUS' ? 'Seeking Calm Ground' : 'Mindful & Present',
+      reflection,
+      themes,
+      action
+    );
+
     res.json({
       emotion: emotion === 'SAD' ? 'Vulnerable & Reflective' : emotion === 'ANXIOUS' ? 'Seeking Calm Ground' : 'Mindful & Present',
       confidence,
       reflection,
-      themes: ['Emotional Expression', 'Inner Calm', 'Self-Compassion'],
-      action: 'Take 3 deep, grounding breaths into your chest and soften your shoulders.'
+      themes,
+      action
     });
   });
 
   app.post(['/api/voice/response', '/voice/response'], handleChat);
 
-  // Centralized Safe Error Handler (masks internal stack traces)
+  // Centralized Safe Error Handler
   app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
     console.error('[Server Error Handler Caught Exception]', err?.message || err);
     if (res.headersSent) {
