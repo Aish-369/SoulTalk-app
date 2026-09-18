@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { Client, Pool } from 'pg';
 import dns from 'dns/promises';
-import { GoogleGenAI } from '@google/genai';
+import { generateSelfHostedEmbedding } from './llm/embeddingProvider';
 
 export interface RagDocument {
   id: number;
@@ -199,31 +199,13 @@ export async function verifyNeonDatabase(): Promise<NeonDbStatus> {
   }
 }
 
-// Generate Embedding via Gemini Embedding API
+// Generate Embedding via Self-Hosted or Optional Fallback
 export async function generateEmbedding(text: string): Promise<{ vector: number[]; dimension: number }> {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    throw new Error('FAIL LOUDLY: GEMINI_API_KEY is not configured.');
+  const result = await generateSelfHostedEmbedding(text);
+  if (result.vector && result.vector.length > 0) {
+    return result;
   }
-
-  const ai = new GoogleGenAI({ apiKey });
-  const modelName = 'gemini-embedding-001';
-
-  const res = await ai.models.embedContent({
-    model: modelName,
-    contents: text.trim(),
-  });
-
-  const vector = res?.embeddings?.[0]?.values;
-  if (!vector || !Array.isArray(vector)) {
-    throw new Error(`FAIL LOUDLY: Invalid embedding output from ${modelName}`);
-  }
-
-  if (vector.length !== 3072) {
-    throw new Error(`FAIL LOUDLY: Expected 3072 dimensions, but received ${vector.length}`);
-  }
-
-  return { vector, dimension: vector.length };
+  throw new Error('No active embedding provider returned vectors. Falling back to local psychoeducation knowledge base.');
 }
 
 // Real Semantic Vector Search using pgvector cosine distance (<=>)
@@ -291,13 +273,18 @@ export async function searchPgvectorRAG(
     const isLowConfidence = validDocs.length === 0;
     const ragMode: VectorRagRetrievalResult['rag_mode'] = isLowConfidence ? 'LOW_CONFIDENCE' : 'PGVECTOR_SEMANTIC';
 
-    // 5. Build context block for prompt
+    // 5. Build verified knowledge context block (strictly factual coping knowledge, NEVER answer exemplars)
     let contextText = '';
     if (!isLowConfidence) {
       contextText = validDocs.map((doc, idx) => {
         const topic = doc.category || doc.metadata?.topic || 'general';
-        const emotion = doc.metadata?.emotion || 'supportive';
-        return `[Exemplar ${idx + 1} | Topic: ${topic} | Emotion: ${emotion} | Similarity: ${doc.similarity_score.toFixed(3)}]\n${doc.content}`;
+        // Clean out any dialogue prefixes if present, keeping factual substance
+        const cleaned = doc.content
+          .replace(/User:\s*.*?\n/gi, '')
+          .replace(/SoulTalk Companion:\s*/gi, '')
+          .replace(/Companion:\s*/gi, '')
+          .trim();
+        return `[Knowledge Note ${idx + 1} | Topic: ${topic} | Similarity: ${doc.similarity_score.toFixed(3)}]\n${cleaned || doc.content}`;
       }).join('\n\n');
     }
 

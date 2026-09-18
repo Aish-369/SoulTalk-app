@@ -566,6 +566,36 @@ class RagEngine {
     };
   }
 
+  /**
+   * Pure Knowledge RAG: Retrieves verified psychoeducational and coping knowledge.
+   * Completely isolated from conversational dataset exemplars.
+   */
+  public retrieveKnowledge(topicOrQuery: string): KnowledgeSnippet[] {
+    const lower = topicOrQuery.toLowerCase();
+    const matches = KNOWLEDGE_BASE.filter(k => {
+      if (lower.includes(k.topic)) return true;
+      if (lower.includes('breath') && k.topic === 'stress') return true;
+      if (lower.includes('panic') && k.topic === 'anxiety') return true;
+      if (lower.includes('exam') && k.topic === 'academic') return true;
+      if (lower.includes('study') && k.topic === 'academic') return true;
+      if (lower.includes('sleep') && k.topic === 'sleep') return true;
+      if (lower.includes('lonely') && k.topic === 'loneliness') return true;
+      if (lower.includes('heartbreak') && k.topic === 'relationships') return true;
+      return false;
+    });
+
+    if (matches.length > 0) return matches;
+
+    // Default relevant psychoeducation
+    if (lower.includes('panic') || lower.includes('ghabar') || lower.includes('anxi')) {
+      return [KNOWLEDGE_BASE[0], KNOWLEDGE_BASE[1]];
+    }
+    if (lower.includes('abhyas') || lower.includes('college')) {
+      return [KNOWLEDGE_BASE[2]];
+    }
+    return [KNOWLEDGE_BASE[0]];
+  }
+
   public generateLocalRagReply(
     query: string,
     emotion: string,

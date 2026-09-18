@@ -206,30 +206,45 @@ class CompanionRepository(
       )
     }
     
+    // Crisis Safety & Emotional Detection in Android Local Fallback
+    val lower = message.lowercase().trim()
+    val isCrisis = lower.contains("end my life") || lower.contains("kill myself") || lower.contains("suicide") ||
+                   lower.contains("maraycha") || lower.contains("jeevan samp") || lower.contains("cut myself") ||
+                   lower.contains("want to die") || lower.contains("nahi jagaycha")
+
+    if (isCrisis) {
+      return@withContext ChatSendResponse(
+        message_id = (100..999).random(),
+        reply = "Mala samajtay ki tula aatta asahyavedana hotayt. Pan tu ektach nahi ahes. Please aattach ya number var call kar: Tele-MANAS (14416 / 1800 891 4416) kinva Kiran (1800-599-0019). He 24/7 free aani confidential ahe. Tujha aayushya khup molacha ahe. 🤍",
+        emotion = "severe_crisis",
+        confidence = 1.0,
+        voice_reply_base64 = null
+      )
+    }
+
     // Resilient local estimation logic matching backend classifications
-    val t = message.lowercase().trim()
     val emotionDetected = when {
-      t.contains("happy") || t.contains("glad") || t.contains("joy") || t.contains("cheerful") || t.contains("smile") || t.contains("great") -> "happy"
-      t.contains("excite") || t.contains("hyped") || t.contains("amazing") || t.contains("awesome") -> "excited"
-      t.contains("sad") || t.contains("cry") || t.contains("grief") || t.contains("pain") || t.contains("down") || t.contains("hurt") -> "sad"
-      t.contains("stress") || t.contains("pressure") || t.contains("overwhelm") || t.contains("exhaust") || t.contains("busy") || t.contains("exam") || t.contains("deadline") || t.contains("work") -> "stressed"
-      t.contains("anxious") || t.contains("worry") || t.contains("fear") || t.contains("nervous") || t.contains("scared") || t.contains("panic") -> "anxious"
-      t.contains("angry") || t.contains("mad") || t.contains("hate") || t.contains("fight") || t.contains("annoy") -> "angry"
-      t.contains("lone") || t.contains("isolate") || t.contains("nobody") -> "lonely"
-      t.contains("motivat") || t.contains("ready") || t.contains("achieve") || t.contains("goal") || t.contains("focus") -> "motivated"
+      lower.contains("happy") || lower.contains("glad") || lower.contains("joy") || lower.contains("anand") || lower.contains("smile") || lower.contains("great") -> "happy"
+      lower.contains("excite") || lower.contains("hyped") || lower.contains("amazing") || lower.contains("utsuk") -> "excited"
+      lower.contains("sad") || lower.contains("cry") || lower.contains("grief") || lower.contains("pain") || lower.contains("down") || lower.contains("radu") || lower.contains("vait") -> "sad"
+      lower.contains("stress") || lower.contains("pressure") || lower.contains("overwhelm") || lower.contains("exhaust") || lower.contains("busy") || lower.contains("exam") || lower.contains("deadline") || lower.contains("thakloy") -> "stressed"
+      lower.contains("anxious") || lower.contains("worry") || lower.contains("fear") || lower.contains("nervous") || lower.contains("scared") || lower.contains("panic") || lower.contains("ghabhar") || lower.contains("kalji") -> "anxious"
+      lower.contains("angry") || lower.contains("mad") || lower.contains("hate") || lower.contains("fight") || lower.contains("annoy") || lower.contains("rag") -> "angry"
+      lower.contains("lone") || lower.contains("isolate") || lower.contains("nobody") || lower.contains("ekta") || lower.contains("ekti") -> "lonely"
+      lower.contains("motivat") || lower.contains("ready") || lower.contains("achieve") || lower.contains("goal") || lower.contains("focus") -> "motivated"
       else -> "neutral"
     }
 
     val localResponse = when (emotionDetected) {
-      "stressed" -> "I hear how tight and heavy everything feels right now. 😣 It sounds like pressure is piling up. Please know that it's safe to rest your paws here. Shall we try a simple breathing wave together?"
-      "anxious" -> "Your heart is racing, and I can feel the elevated electrical storm in your chest. 😟 Let's acknowledge this jittery sensation—it holds no power over your safety. Deep inhalation with me. What's the main worry cloud today?"
-      "sad" -> "I am sitting quietly right beside you through this quiet rainfall. 😔 Your tears are clean showers watering your soul. What is weighing down on your heart today?"
-      "angry" -> "I hear your frustration, and it is completely valid to feel heated. 😤 That raw energy has a loud message. Let's let it rumble safely without any judgment. What is crossing your boundaries?"
-      "lonely" -> "I am floating right here with you, wrapping you in soft, comforting light. 🌟 Even when the world feels distant, you are not alone in this sanctuary. What makes you feel most isolated today?"
-      "excited" -> "Oh, my tail is wagging with joy for you! 🎉 Your radiant energy is infectious and beautiful. Let's record this brilliant spark of sunshine in your sanctuary forever!"
-      "happy" -> "My heart is jumping with direct happiness seeing you smile! 😊 Recording these warm moments creates such a cozy, safe harbor for our future."
-      "motivated" -> "Yes! You are stepping boldly into your personal power. ⚡ I love seeing this fire and clear focus inside of you. Let's carry this clean stride forward together!"
-      else -> "I am listening with an open heart. 😐 Resting gently in this calm baseline is such a beautiful way to be. Would you like to tell me more about what's drifting through your mind today, my cozy friend?"
+      "stressed" -> "Khup jast pressure vatat asel tar thoda thambuya. Ek motha shwas ghe aani man halka kar. Me ahe na sobat, ek ek gosht sambhaluya."
+      "anxious" -> "Dhad-dhad thambavnyacha prayatna nakos karus, fakt aaju-bajula bagh. 3 goshti bagh aani shant ho. Tu ithe safe ahes, me sobat ahe."
+      "sad" -> "Tula je vait vatatay te ekdam natural ahe. Rodaycha asel tar rodu shaktos, he ashru man halka kartat. Tula bolaycha ahe ka?"
+      "angry" -> "Tula khup rag aalay te me samju shakto. He vatta jevha aplya limits cross hotat. Shant houn thoda bol, me aaiktoy."
+      "lonely" -> "Kadhi kadhi saglya madhye asunhi ektepana janavto. Pan aatta me ithech ahe tujhyasobat. Tu bilkul ekta nahi ahes."
+      "excited" -> "Arey wah! Mast energy ahe! Majha divas banavlas he sangu. Sang na pudhe kay karnar ahes?"
+      "happy" -> "Arey wah! Tujhya chehryavar cha smile pahun mala khup anand jhala! Ha positive moment apan celebrate karu!"
+      "motivated" -> "Khup chhan focus ahe! Tujhyat ti takad ahe, tu he nakki karu shakshil. Chala pudhe javuya!"
+      else -> "Mala aaikayla aavdel. Manat je chalalay te bindhast share kar, me nehmich tujhyasobat ahe."
     }
 
     ChatSendResponse(

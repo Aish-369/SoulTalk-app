@@ -1,0 +1,82 @@
+{
+  "total_v3_conversations": 2061,
+  "total_v3_asst_turns": 5461,
+  "unique_asst_turns": 2830,
+  "repeated_asst_percentage": 48.18,
+  "top_repeated_assistant_responses": [
+    {
+      "text": "Aakho book nako vachus. Pehle youtube var 1 shot video bagh, mag 5 standard questions hatane solve kar.",
+      "count": 67
+    },
+    {
+      "text": "Nakkich! Jeva formula application dista teva bhiti kami hote. Ek unit aadhich pakad aani sampav.",
+      "count": 67
+    },
+    {
+      "text": "He Indian families madhla khup deep conflict ahe re. Tyanna security chi kalji vatate. Shantpane bolnyacha prayatna kela ka?",
+      "count": 60
+    },
+    {
+      "text": "Emotional statements tyanchya bhiti madhun aale ahet. Tyanna tujha concrete plan dakhvus shaktos ka roadmap sarka?",
+      "count": 60
+    },
+    {
+      "text": "Perfect. Jeva parents na structured roadmap disto teva tyancha confidence vadhto.",
+      "count": 60
+    },
+    {
+      "text": "4 vela round paryant pochlas yaatach tujhi capability diste re. Rejection tujhi worth decide nahi karat.",
+      "count": 58
+    },
+    {
+      "text": "Pratyekachi timing vegli aste re. Consistency thev, ek offer aali ki he sagla struggle worth vatil.",
+      "count": 58
+    },
+    {
+      "text": "Cold emailing madhe 5-10% response rate standard asto re. Ek pan reply aala nahiye ka?",
+      "count": 50
+    },
+    {
+      "text": "At least response aala matlab email template right ahe! Project repo cha live demo link include kelas ka email madhe?",
+      "count": 50
+    },
+    {
+      "text": "Live deployed link direct baghun hiring managers lavkar impress hotat. Demo link add kar aani next 20 emails pathav.",
+      "count": 50
+    }
+  ],
+  "template_clusters_count": 13,
+  "top_template_clusters": {
+    "4 vela round paryant pochlas yaatach tujhi capability diste ": 58,
+    "Pratyekachi timing vegli aste re. Consistency thev, ek offer": 58,
+    "He Indian families madhla khup deep conflict ahe re. Tyanna ": 60,
+    "Emotional statements tyanchya bhiti madhun aale ahet. Tyanna": 60,
+    "Perfect. Jeva parents na structured roadmap disto teva tyanc": 60,
+    "Aakho book nako vachus. Pehle youtube var 1 shot video bagh,": 67,
+    "Nakkich! Jeva formula application dista teva bhiti kami hote": 67,
+    "Detention list baghun heart drop hoto re! Sir shi bolun medi": 48,
+    "Ha thoda tedious ahe pan exam deu dilya peksha changla ahe. ": 48,
+    "Agdi! Extra work submit kar ani detention clear karun ghe. S": 48,
+    "Cold emailing madhe 5-10% response rate standard asto re. Ek": 50,
+    "At least response aala matlab email template right ahe! Proj": 50,
+    "Live deployed link direct baghun hiring managers lavkar impr": 50
+  },
+  "category_distribution": {
+    "daily_life": 975,
+    "overthinking": 67,
+    "health_anxiety": 46,
+    "career_stress": 272,
+    "social_anxiety": 53,
+    "grief_loss": 47,
+    "burnout": 47,
+    "relationships": 82,
+    "family": 123,
+    "academic_pressure": 201,
+    "loneliness": 57,
+    "self_esteem": 58,
+    "crisis_safety": 33
+  },
+  "crisis_total": 36,
+  "crisis_with_helpline": 6,
+  "crisis_coverage_pct": 16.67
+}

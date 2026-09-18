@@ -1,0 +1,28 @@
+{
+  "base_model_name": "Qwen/Qwen2.5-3B-Instruct",
+  "dataset_version": "v2.0_canonical",
+  "train_file": "backend/dataset/train.jsonl",
+  "validation_file": "backend/dataset/validation.jsonl",
+  "test_file": "backend/dataset/test.jsonl",
+  "output_dir": "adapter/soultalk-qwen2.5-3b-lora",
+  "max_seq_length": 1024,
+  "lora_r": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.05,
+  "target_modules": [
+    "q_proj",
+    "k_proj",
+    "v_proj",
+    "o_proj",
+    "gate_proj",
+    "up_proj",
+    "down_proj"
+  ],
+  "learning_rate": 0.0002,
+  "batch_size": 4,
+  "gradient_accumulation_steps": 4,
+  "epochs": 3,
+  "warmup_ratio": 0.03,
+  "lr_scheduler_type": "cosine",
+  "quantization": "bitsandbytes_4bit (QLoRA)"
+}

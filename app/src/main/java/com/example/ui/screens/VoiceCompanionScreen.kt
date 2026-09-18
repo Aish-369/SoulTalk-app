@@ -331,78 +331,49 @@ fun SoulTalkVoiceCompanionScreen(
       recordingState = WhisperState.PROCESSING
       analysisResult = null
 
-      val apiKey = BuildConfig.GEMINI_API_KEY
-      val isApiKeyValid = apiKey.isNotEmpty() && apiKey != "MY_GEMINI_API_KEY"
-
       var finalResult: GeminiReflectionResponse? = null
 
-      if (isApiKeyValid) {
-        withContext(Dispatchers.IO) {
-          try {
-            val endpoint = URL("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=$apiKey")
-            val conn = endpoint.openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.doOutput = true
-
-            // Send precise structural guidelines to Gemini to output custom JSON formatting matching the DB record schema
-            val promptInstruction = """
-              You are an expert, world-class emotional wellness designer and empathetic advisor inside SoulTalk's Whisper Corner.
-              Analyze the following transcribed emotional reflection: "${textToAnalyze.replace("\"", "\\\"")}"
-              
-              You MUST respond ONLY with a raw JSON object string having this exact schema:
-              {
-                "emotion": "Happy" | "Sad" | "Stress" | "Growth" | "Anxious" | "Tired",
-                "confidence": (a Float between 0.0 and 100.0 representing emotion certainty),
-                "reflection": "your brief 2-sentence soothing, deeply comforting private reflection",
-                "themes": ["theme1", "theme2"],
-                "action": "Suggested gentle Wellness Action matching physical Material 3 guidelines (e.g. '5 Minute Breathing Session', '3 Minute Journal Writing', 'Short Nature Walk')"
-              }
-              Do not include any wordy explanations, markdowns, or surrounding brackets. Return raw JSON.
-            """.trimIndent()
-
-            val requestJson = """
-              {
-                "contents": [{
-                  "parts": [{"text": "${promptInstruction.replace("\n", " ").replace("\"", "\\\"")}"}]
-                }],
-                "generationConfig": {
-                  "responseMimeType": "application/json",
-                  "temperature": 0.4
-                }
-              }
-            """.trimIndent()
-
-            conn.outputStream.use { os ->
-              os.write(requestJson.toByteArray(Charsets.UTF_8))
-            }
-
-            if (conn.responseCode == 200) {
-              val rawResponse = conn.inputStream.bufferedReader().use { it.readText() }
-              val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
-              val adapter = moshi.adapter(Map::class.java)
-              val topMap = adapter.fromJson(rawResponse)
-              val candidates = topMap?.get("candidates") as? List<*>
-              val firstCandidate = candidates?.firstOrNull() as? Map<*, *>
-              val content = firstCandidate?.get("content") as? Map<*, *>
-              val parts = content?.get("parts") as? List<*>
-              val firstPart = parts?.firstOrNull() as? Map<*, *>
-              val textResult = firstPart?.get("text") as? String
-
-              textResult?.let { rawJson ->
-                val responseAdapter = moshi.adapter(GeminiReflectionResponse::class.java)
-                finalResult = responseAdapter.fromJson(rawJson)
-              }
-            } else {
-              Log.e("WhisperCornerGemini", "Gemini HTTP response failed code: ${conn.responseCode}")
-            }
-          } catch (e: Exception) {
-            Log.e("WhisperCornerGemini", "Gemini transaction error: ${e.message}")
+      withContext(Dispatchers.IO) {
+        try {
+          val baseUrl = com.example.core.ApiConfig.getBaseUrl(context)
+          val authHeader = com.example.core.ApiConfig.getAuthHeader(context)
+          val endpoint = URL("${baseUrl}api/voice/reflect")
+          val conn = endpoint.openConnection() as HttpURLConnection
+          conn.requestMethod = "POST"
+          conn.setRequestProperty("Content-Type", "application/json")
+          if (authHeader.isNotEmpty()) {
+            conn.setRequestProperty("Authorization", authHeader)
           }
+          conn.doOutput = true
+          conn.connectTimeout = 5000
+          conn.readTimeout = 7000
+
+          val requestJson = """
+            {
+              "transcript": "${textToAnalyze.replace("\"", "\\\"")}",
+              "companion_name": "Wolfie",
+              "language": "mr"
+            }
+          """.trimIndent()
+
+          conn.outputStream.use { os ->
+            os.write(requestJson.toByteArray(Charsets.UTF_8))
+          }
+
+          if (conn.responseCode == 200) {
+            val rawResponse = conn.inputStream.bufferedReader().use { it.readText() }
+            val moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build()
+            val responseAdapter = moshi.adapter(GeminiReflectionResponse::class.java)
+            finalResult = responseAdapter.fromJson(rawResponse)
+          } else {
+            Log.w("WhisperCornerVoice", "Backend voice reflection returned code: ${conn.responseCode}")
+          }
+        } catch (e: Exception) {
+          Log.w("WhisperCornerVoice", "Voice reflection backend connection: ${e.message}")
         }
       }
 
-      // Safe empathetic cognitive fallback if the key is missing or there's a hardware/network packet loss
+      // Safe empathetic cognitive fallback if offline or backend unavailable
       if (finalResult == null) {
         delay(2200) // Aesthetic delay for calming intelligence spinner
         val lowerText = textToAnalyze.lowercase()
