@@ -37,7 +37,7 @@ FORBIDDEN_PATTERNS = [
 ]
 
 EMOJI_PATTERN = re.compile(
-    r"[\U00010000-\U0010ffff\u2600-\u26ff\u2700-\u27bf\uFE00-\uFE0F\u1F300-\u1F9FF]",
+    r"[\U00010000-\U0010ffff\u2600-\u26ff\u2700-\u27bf\uFE00-\uFE0F]",
     flags=re.UNICODE
 )
 

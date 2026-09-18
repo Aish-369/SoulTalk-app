@@ -1,8 +1,21 @@
-# SoulTalk Backend Engine (FastAPI & PostgreSQL)
+# SoulTalk Backend Engine (LEGACY ARCHITECTURE NOTE)
 
-Welcome to the **SoulTalk Empathetic Core Engine** backend codebase. This service orchestrates secure user registration, multi-factor encrypted login, stateless JWT sessions, and persistent profile updates in real-time, working hand-in-hand with the **SoulTalk Jetpack Compose Android Client**. 
+> **⚠️ DEPRECATION NOTICE & ARCHITECTURAL SOURCE OF TRUTH:**
+> This FastAPI service is the **legacy prototype** backend. 
+> The **CANONICAL PRODUCTION BACKEND** for SoulTalk is the Node.js/TypeScript Express server located at `/server.ts` running on port 3000.
+> The production server handles:
+> - Production Cloud Run container hosting
+> - Neon PostgreSQL serverless pooling with `pgvector`
+> - Semantic Hybrid RAG Engine (`server/ragEngine.ts` and `server/neonVectorRag.ts`)
+> - Multi-tier safety engine (`server/safetyEngine.ts`) with deterministic crisis detection
+> - Real JWT authentication, token rotation, and secure user data isolation
+> - Client SPA bundling and API proxying
+> 
+> Do **NOT** deploy or point production traffic to this Python backend. All active endpoints and contracts are served by `/server.ts`.
 
 ---
+
+## Historical Documentation (FastAPI Prototype)
 
 ## 🛠️ Tech Stack & Architecture
 

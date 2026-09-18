@@ -17,23 +17,15 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "../.env"))
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
-# Production-grade resilient database engine creation for Neon PostgreSQL
-# Automatically falls back to SQLite if PostgreSQL/Neon is unreachable (e.g. offline mode)
-sqlite_engine = create_engine(
-    "sqlite:///./local_soultalk.db",
-    connect_args={"check_same_thread": False},
-    echo=False
-)
-SqliteSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=sqlite_engine)
+# Production-grade database engine for Neon PostgreSQL ONLY
+# SQLite fallback is strictly prohibited in production.
+if not DATABASE_URL or not DATABASE_URL.startswith("postgresql"):
+    logger.warning("DATABASE_URL is not set or not postgresql. Neon PostgreSQL is required.")
 
 engine = None
 SessionLocal = None
 
-if not DATABASE_URL or DATABASE_URL.startswith("sqlite"):
-    logger.info("Using SQLite database engine as primary")
-    engine = sqlite_engine
-    SessionLocal = SqliteSessionLocal
-elif DATABASE_URL.startswith("postgresql"):
+if DATABASE_URL and DATABASE_URL.startswith("postgresql"):
     if "sslmode" not in DATABASE_URL:
         DATABASE_URL = f"{DATABASE_URL}&sslmode=require"
     try:
@@ -50,17 +42,18 @@ elif DATABASE_URL.startswith("postgresql"):
         SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
         logger.info("Configured Neon PostgreSQL database engine with 3s connect timeout")
     except Exception as e:
-        logger.warning(f"Could not initialize PostgreSQL engine: {e}. Defaulting to SQLite fallback.")
-        engine = sqlite_engine
-        SessionLocal = SqliteSessionLocal
+        logger.error(f"Could not initialize PostgreSQL engine: {e}. SQLite fallback is strictly prohibited.")
+        raise RuntimeError(f"PostgreSQL connection initialization failed: {e}")
 else:
-    engine = sqlite_engine
-    SessionLocal = SqliteSessionLocal
+    # No fallback allowed
+    raise RuntimeError("DATABASE_URL environment variable must be a valid PostgreSQL connection string. SQLite fallback is strictly prohibited.")
 
 Base = declarative_base()
 
 def test_connection(max_retries: int = 2) -> bool:
-    """Test database connection with fast fallback."""
+    """Test database connection."""
+    if not engine:
+        return False
     for attempt in range(max_retries):
         try:
             with engine.connect() as connection:
@@ -73,29 +66,17 @@ def test_connection(max_retries: int = 2) -> bool:
     return False
 
 def get_db() -> Generator[Session, None, None]:
-    """Get database session with seamless offline fallback."""
+    """Get database session. Fails fast if Neon PostgreSQL is unavailable."""
+    if not SessionLocal:
+        raise RuntimeError("Database session factory is not configured. Neon PostgreSQL is required.")
+    db = SessionLocal()
     try:
-        db = SessionLocal()
-        # Ping connection
         db.execute(text("SELECT 1"))
         yield db
         db.commit()
-        return
     except Exception as e:
-        logger.warning(f"Primary DB session failed: {e}. Switching to offline SQLite fallback.")
-        # Fallback to local SQLite session
-        try:
-            Base.metadata.create_all(bind=sqlite_engine)
-            fallback_db = SqliteSessionLocal()
-            yield fallback_db
-            fallback_db.commit()
-        except Exception as fallback_err:
-            logger.error(f"Fallback SQLite error: {fallback_err}")
-            raise
-        finally:
-            fallback_db.close()
+        db.rollback()
+        logger.error(f"Database transaction failed: {e}")
+        raise
     finally:
-        try:
-            db.close()
-        except Exception:
-            pass
+        db.close()

@@ -64,7 +64,7 @@ export type ResponseMode =
   | 'safety_first'
   | 'knowledge_explanation';
 
-export type LanguageType = 'roman_marathi' | 'english' | 'devanagari_marathi' | 'mixed';
+export type LanguageType = 'roman_marathi' | 'english' | 'devanagari_marathi' | 'hinglish' | 'mixed';
 
 export interface EmotionalState {
   emotion: EmotionType;
@@ -85,19 +85,26 @@ export function detectLanguage(text: string): LanguageType {
   const marathiMarkers = [
     'aahe', 'ahe', 'mala', 'tula', 'tujha', 'majha', 'kasa', 'kashi', 'kay', 'zala', 'jhala',
     'vatat', 'vatatay', 'vichar', 'manat', 'sobat', 'bolat', 'samaj', 'halka', 'shant', 'ekta',
-    'ekti', 'hot', 'nahi', 'nahiy', 'nahiye', 'karu', 'karto', 'karte', 'kela', 'pan', 'ani',
+    'ekti', 'hot', 'nahi', 'nahiy', 'nahiye', 'karto', 'karte', 'kela', 'pan', 'ani',
     'aani', 'mhanje', 'kiti', 'khup', 'kadhi', 'tar', 'sathi', 'aplya', 'gela', 'rahat'
   ];
 
+  const hindiMarkers = [
+    'mujhe', 'mera', 'meri', 'mere', 'tum', 'tumhe', 'aap', 'kya', 'kyun', 'kaise',
+    'raha', 'rahi', 'rahe', 'hoga', 'hogi', 'karein', 'kare', 'karna', 'kuch', 'bahut',
+    'samajh', 'yaar', 'bhai', 'lag', 'lagta', 'lagti', 'zindagi', 'chahiye', 'karo'
+  ];
+
   let marathiWordCount = 0;
+  let hindiWordCount = 0;
   const words = lower.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(Boolean);
   for (const w of words) {
-    if (marathiMarkers.includes(w)) {
-      marathiWordCount++;
-    }
+    if (marathiMarkers.includes(w)) marathiWordCount++;
+    if (hindiMarkers.includes(w)) hindiWordCount++;
   }
 
   const marathiRatio = words.length > 0 ? marathiWordCount / words.length : 0;
+  const hindiRatio = words.length > 0 ? hindiWordCount / words.length : 0;
 
   if (hasDevanagari) {
     return 'devanagari_marathi';
@@ -107,6 +114,9 @@ export function detectLanguage(text: string): LanguageType {
   }
   if (marathiWordCount === 1 && words.length <= 4) {
     return 'roman_marathi';
+  }
+  if (hindiRatio >= 0.20 || hindiWordCount >= 2) {
+    return 'hinglish';
   }
   return 'english';
 }

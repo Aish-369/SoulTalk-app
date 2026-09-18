@@ -5,6 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 
+# Note: server.ts is the canonical production backend. This FastAPI module is retained for historical legacy reference.
+logging.getLogger("uvicorn").warning("⚠️ WARNING: This FastAPI service is the legacy prototype. The canonical production backend is /server.ts.")
+
 from .database import Base, engine, get_db
 from .models import (
     UserModel,

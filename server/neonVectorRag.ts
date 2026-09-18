@@ -55,9 +55,16 @@ export function getPostgresPool(): Pool | null {
 
   if (!poolInstance) {
     try {
+      const isProduction = process.env.NODE_ENV === 'production';
+      const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== undefined
+        ? process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === 'true'
+        : isProduction;
+
+      const isLocalDb = dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
+
       poolInstance = new Pool({
         connectionString: dbUrl,
-        ssl: { rejectUnauthorized: false },
+        ssl: isLocalDb ? false : { rejectUnauthorized },
         max: 10,
         idleTimeoutMillis: 30000,
         connectionTimeoutMillis: 5000,
@@ -124,9 +131,15 @@ export async function verifyNeonDatabase(): Promise<NeonDbStatus> {
   }
 
   // 2. PostgreSQL Connection & SSL
+  const isProduction = process.env.NODE_ENV === 'production';
+  const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== undefined
+    ? process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === 'true'
+    : isProduction;
+  const isLocalDb = dbUrl.includes('localhost') || dbUrl.includes('127.0.0.1');
+
   const client = new Client({
     connectionString: dbUrl,
-    ssl: { rejectUnauthorized: false },
+    ssl: isLocalDb ? false : { rejectUnauthorized },
     connectionTimeoutMillis: 7000,
   });
 
@@ -199,12 +212,32 @@ export async function verifyNeonDatabase(): Promise<NeonDbStatus> {
   }
 }
 
-// Generate Embedding via Self-Hosted or Optional Fallback
+// Generate Embedding via Self-Hosted or Gemini
 export async function generateEmbedding(text: string): Promise<{ vector: number[]; dimension: number }> {
+  // 1. Try self-hosted if configured
   const result = await generateSelfHostedEmbedding(text);
   if (result.vector && result.vector.length > 0) {
     return result;
   }
+
+  // 2. Try Gemini 3072-dim embedding (matches vector(3072) in Neon)
+  if (process.env.GEMINI_API_KEY) {
+    try {
+      const { GoogleGenAI } = await import('@google/genai');
+      const ai = new GoogleGenAI();
+      const embRes = await ai.models.embedContent({
+        model: 'gemini-embedding-2-preview',
+        contents: text
+      });
+      const vec = embRes.embeddings?.[0]?.values;
+      if (vec && vec.length > 0) {
+        return { vector: vec, dimension: vec.length };
+      }
+    } catch (geminiEmbErr: any) {
+      console.warn('[NeonVectorRAG] Gemini embedding generation failed:', geminiEmbErr?.message || geminiEmbErr);
+    }
+  }
+
   throw new Error('No active embedding provider returned vectors. Falling back to local psychoeducation knowledge base.');
 }
 

@@ -2,6 +2,7 @@ import { EmotionalState } from './emotionalStateEngine';
 import { GenerationMode } from './conversationRouter';
 import { validateAndSanitizeResponse, generateDiverseFallback } from './qualityGuard';
 import { selfHostedLLM } from './llm/selfHostedProvider';
+import { geminiLLM } from './llm/geminiProvider';
 import { getLLMConfig } from './llm/llmConfig';
 
 export interface ModelGenerationRequest {
@@ -19,7 +20,7 @@ export interface ModelGenerationRequest {
 export interface ModelGenerationResult {
   replyText: string;
   modelUsed: string;
-  engineUsed: 'SELF_HOSTED_LLM' | 'LOCAL_GENERATIVE' | 'FALLBACK';
+  engineUsed: 'GEMINI_LLM' | 'SELF_HOSTED_LLM' | 'LOCAL_GENERATIVE' | 'FALLBACK';
   generationMode: GenerationMode;
   contextUsed: boolean;
   knowledgeRetrieved: boolean;
@@ -45,10 +46,9 @@ export async function generateCompanionResponse(
 
   let rawReply = '';
   let modelUsed = 'none';
-  let engineUsed: 'SELF_HOSTED_LLM' | 'LOCAL_GENERATIVE' | 'FALLBACK' = 'LOCAL_GENERATIVE';
+  let engineUsed: 'GEMINI_LLM' | 'SELF_HOSTED_LLM' | 'LOCAL_GENERATIVE' | 'FALLBACK' = 'LOCAL_GENERATIVE';
 
-  // 1. Primary Engine: Self-Hosted Open-Source LLM (vLLM / Ollama / OpenAI-Compatible Private Endpoint)
-  // ZERO dependence on Gemini API tokens.
+  // 1. Primary Option A: Self-Hosted Open-Source LLM if configured
   const config = getLLMConfig();
   if (config.endpointUrl) {
     try {
@@ -72,15 +72,37 @@ export async function generateCompanionResponse(
     }
   }
 
-  // 2. Last-Resort Graceful Degradation (Engages ONLY if the self-hosted inference server is down)
-  // Transparently labeled as LOCAL_GENERATIVE. Never claimed to be a real neural LLM.
+  // 2. Primary Option B: Google Gemini API (gemini-2.5-flash)
+  if (!rawReply && (await geminiLLM.isAvailable())) {
+    try {
+      const geminiRes = await geminiLLM.generateCompletion({
+        systemPrompt,
+        messages: chatHistory.slice(-6),
+        userMessage,
+        temperature: config.temperature ?? 0.7,
+        maxTokens: config.maxTokens ?? 500
+      });
+
+      if (geminiRes.success && geminiRes.content && geminiRes.content.length > 3) {
+        rawReply = geminiRes.content;
+        modelUsed = geminiRes.modelUsed;
+        engineUsed = 'GEMINI_LLM';
+      } else {
+        console.warn('[ModelAdapter] Gemini generation failed:', geminiRes.error);
+      }
+    } catch (geminiErr: any) {
+      console.warn('[ModelAdapter] Gemini generation exception:', geminiErr?.message || geminiErr);
+    }
+  }
+
+  // 3. Last-Resort Graceful Degradation (Engages ONLY if all live inference endpoints are down)
   if (!rawReply) {
     rawReply = generateDiverseFallback(emotionalState, userName, companionName, userMessage);
     modelUsed = 'soultalk-graceful-resilience-engine';
     engineUsed = 'LOCAL_GENERATIVE';
   }
 
-  // 3. Quality & Safety Guard Validation
+  // 4. Quality & Safety Guard Validation
   let guardResult = validateAndSanitizeResponse(rawReply, emotionalState, userName);
   if (guardResult.needsRegeneration) {
     console.warn('[ModelAdapter] Quality Guard flagged violations:', guardResult.violations);

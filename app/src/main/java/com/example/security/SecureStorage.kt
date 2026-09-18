@@ -43,7 +43,7 @@ object SecureStorage {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize secure storage: ${e.message}")
             // Fallback to regular SharedPreferences if encryption fails
-            encryptedPrefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
+            encryptedPrefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         }
     }
     

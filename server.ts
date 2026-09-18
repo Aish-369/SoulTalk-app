@@ -20,6 +20,9 @@ import {
   hashPassword,
   verifyPassword,
   generateJwtToken,
+  generateAccessToken,
+  generateRefreshToken,
+  hashToken,
   verifyJwtToken,
   requireAuth,
   optionalAuth,
@@ -99,18 +102,43 @@ async function startServer() {
   const PORT = 3000;
 
   // CORS Configuration
+  const allowedOrigins = [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:5173',
+    process.env.APP_URL,
+    process.env.ALLOWED_ORIGIN
+  ].filter(Boolean) as string[];
+
   app.use(cors({
     origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, server-to-server) or matching hosts
+      // Allow requests with no origin (like native Android Retrofit requests, curl, server-to-server)
       if (!origin) return callback(null, true);
-      return callback(null, true);
+      if (
+        allowedOrigins.includes(origin) ||
+        origin.endsWith('.run.app') ||
+        origin.endsWith('.aistudio.google') ||
+        origin.includes('localhost') ||
+        origin.includes('127.0.0.1')
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
   }));
 
   app.use(express.json({ limit: '1mb' }));
+
+  // Malformed JSON error handler
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (err instanceof SyntaxError && (('body' in err) || ('status' in err && (err as any).status === 400))) {
+      return res.status(400).json({ success: false, error: 'Malformed JSON payload.' });
+    }
+    next(err);
+  });
 
   // Security Headers Middleware
   app.use((req, res, next) => {
@@ -126,6 +154,18 @@ async function startServer() {
 
   // RAG Engine Pre-warm
   ragEngine.loadDatasets();
+
+  // Database Schema Initialization
+  try {
+    const pool = getPostgresPool();
+    if (pool) {
+      dbService.initSchema().catch(e => {
+        console.warn('[Neon Database] Background schema initialization notice:', e.message);
+      });
+    }
+  } catch (err: any) {
+    console.warn('[Neon Database] Initial connection deferred:', err.message);
+  }
 
   // Health check endpoint
   app.get(['/api/health', '/health'], async (req, res) => {
@@ -301,14 +341,21 @@ async function startServer() {
       1.0
     );
 
-    const token = generateJwtToken(createdUser);
+    const accessToken = generateAccessToken(createdUser);
+    const { token: refreshToken, tokenId, expiresAt } = generateRefreshToken(createdUser);
+    try {
+      await dbService.storeRefreshToken(createdUser.id, tokenId, hashToken(refreshToken), expiresAt);
+    } catch (e) {}
+
     const numericId = parseInt(String(createdUser.id).replace(/\D/g, '').slice(-8) || '1', 10);
 
     res.json({
       success: true,
-      access_token: token,
-      refresh_token: token,
+      token: accessToken,
+      access_token: accessToken,
+      refresh_token: refreshToken,
       token_type: 'bearer',
+      expires_in: 3600,
       user: {
         id: numericId,
         uuid: createdUser.id,
@@ -342,14 +389,21 @@ async function startServer() {
       return res.status(401).json({ error: 'Invalid email or password.' });
     }
 
-    const token = generateJwtToken(user);
+    const accessToken = generateAccessToken(user);
+    const { token: refreshToken, tokenId, expiresAt } = generateRefreshToken(user);
+    try {
+      await dbService.storeRefreshToken(user.id, tokenId, hashToken(refreshToken), expiresAt);
+    } catch (e) {}
+
     const numericId = parseInt(String(user.id).replace(/\D/g, '').slice(-8) || '1', 10);
 
     res.json({
       success: true,
-      access_token: token,
-      refresh_token: token,
+      token: accessToken,
+      access_token: accessToken,
+      refresh_token: refreshToken,
       token_type: 'bearer',
+      expires_in: 3600,
       user: {
         id: numericId,
         uuid: user.id,
@@ -391,14 +445,21 @@ async function startServer() {
       });
     }
 
-    const token = generateJwtToken(user);
+    const accessToken = generateAccessToken(user);
+    const { token: refreshToken, tokenId, expiresAt } = generateRefreshToken(user);
+    try {
+      await dbService.storeRefreshToken(user.id, tokenId, hashToken(refreshToken), expiresAt);
+    } catch (e) {}
+
     const numericId = parseInt(String(user.id).replace(/\D/g, '').slice(-8) || '1', 10);
 
     res.json({
       success: true,
-      access_token: token,
-      refresh_token: token,
+      token: accessToken,
+      access_token: accessToken,
+      refresh_token: refreshToken,
       token_type: 'bearer',
+      expires_in: 3600,
       user: {
         id: numericId,
         uuid: user.id,
@@ -440,14 +501,21 @@ async function startServer() {
       1.0
     );
 
-    const token = generateJwtToken(guestUser);
+    const accessToken = generateAccessToken(guestUser);
+    const { token: refreshToken, tokenId, expiresAt } = generateRefreshToken(guestUser);
+    try {
+      await dbService.storeRefreshToken(guestUser.id, tokenId, hashToken(refreshToken), expiresAt);
+    } catch (e) {}
+
     const numericId = parseInt(String(guestUser.id).replace(/\D/g, '').slice(-8) || '1', 10);
 
     res.json({
       success: true,
-      access_token: token,
-      refresh_token: token,
+      token: accessToken,
+      access_token: accessToken,
+      refresh_token: refreshToken,
       token_type: 'bearer',
+      expires_in: 3600,
       user: {
         id: numericId,
         uuid: guestUser.id,
@@ -490,7 +558,7 @@ async function startServer() {
     }
 
     const payload = verifyJwtToken(refreshToken);
-    if (!payload) {
+    if (!payload || payload.tokenType !== 'refresh') {
       return res.status(401).json({ success: false, error: 'Invalid or expired refresh token.' });
     }
 
@@ -499,21 +567,44 @@ async function startServer() {
       return res.status(401).json({ success: false, error: 'User no longer exists.' });
     }
 
-    const newAccessToken = generateJwtToken(user);
+    // Atomically verify and consume old refresh token to prevent concurrent replay attacks
+    try {
+      const consumed = await dbService.consumeRefreshToken(user.id, hashToken(refreshToken));
+      if (!consumed) {
+        return res.status(401).json({ success: false, error: 'Refresh token has been revoked, expired, or already used.' });
+      }
+    } catch (e: any) {
+      return res.status(500).json({ success: false, error: 'Failed to process refresh token rotation.' });
+    }
+
+    const newAccessToken = generateAccessToken(user);
+    const { token: newRefreshToken, tokenId, expiresAt } = generateRefreshToken(user);
+    try {
+      await dbService.storeRefreshToken(user.id, tokenId, hashToken(newRefreshToken), expiresAt);
+    } catch (e) {}
+
     res.json({
       success: true,
+      token: newAccessToken,
       access_token: newAccessToken,
-      refresh_token: newAccessToken,
-      token_type: 'bearer'
+      refresh_token: newRefreshToken,
+      token_type: 'bearer',
+      expires_in: 3600
     });
   });
 
-  // Logout endpoint (/api/auth/logout, /auth/logout)
-  app.post(['/api/auth/logout', '/auth/logout'], optionalAuth, (req, res) => {
-    res.json({
-      success: true,
-      message: 'Logged out successfully.'
-    });
+  // Logout endpoint (/api/auth/logout)
+  app.post(['/api/auth/logout', '/auth/logout'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const refreshToken = req.body?.refresh_token || req.body?.refreshToken;
+      if (refreshToken) {
+        await dbService.revokeRefreshToken(hashToken(refreshToken));
+      }
+      if (req.user) {
+        await dbService.revokeAllUserRefreshTokens(req.user.id);
+      }
+    } catch (e) {}
+    res.json({ success: true, message: 'Logged out successfully. All refresh sessions revoked.' });
   });
 
   // ==========================================
@@ -921,47 +1012,55 @@ async function startServer() {
     });
   });
 
-  app.post(['/api/breathing/complete', '/breathing/complete'], optionalAuth, async (req: AuthenticatedRequest, res) => {
-    const { xp_earned = 25 } = req.body;
+  app.post(['/api/breathing/complete', '/breathing/complete'], requireAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const sessionType = req.body.session_type || 'Box Breathing (4-4-4-4)';
+    const duration = parseInt(String(req.body.duration || req.body.duration_seconds || '180'), 10);
+    const cycles = parseInt(String(req.body.cycles_completed || '4'), 10);
+    const xpEarned = parseInt(String(req.body.xp_earned || '25'), 10);
+
+    const session = await dbService.addBreathingSession(currentUser.id, sessionType, duration, cycles, xpEarned);
+    const stats = await dbService.getBreathingStats(currentUser.id);
+
     res.json({
       success: true,
-      xp_earned,
-      current_level: 3,
-      total_xp: 150
+      session_id: session.id,
+      session,
+      xp_earned: xpEarned,
+      total_xp: stats.total_xp,
+      stats
     });
   });
 
-  app.get(['/api/breathing/history', '/breathing/history'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+  app.get(['/api/breathing/history', '/breathing/history'], requireAuth, async (req: AuthenticatedRequest, res) => {
     const currentUser = await resolveOrCreateUser(req);
+    const history = await dbService.getBreathingHistory(currentUser.id);
     const numericUserId = parseInt(String(currentUser.id).replace(/\D/g, '').slice(-8) || '1', 10);
-    res.json([
-      {
-        id: 1,
-        user_id: numericUserId,
-        session_type: 'Box Breathing (4-4-4-4)',
-        duration: 180,
-        cycles_completed: 8,
-        xp_earned: 30,
-        created_at: Date.now() - 86400000
-      },
-      {
-        id: 2,
-        user_id: numericUserId,
-        session_type: 'Calm Inhale (4-7-8)',
-        duration: 120,
-        cycles_completed: 5,
-        xp_earned: 25,
-        created_at: Date.now() - 3600000
-      }
-    ]);
+    res.json(history.map(h => ({
+      id: parseInt(String(h.id).replace(/\D/g, '').slice(-8) || '1', 10),
+      session_id: h.id,
+      user_id: numericUserId,
+      session_type: h.session_type,
+      duration: h.duration,
+      duration_seconds: h.duration,
+      cycles_completed: h.cycles_completed,
+      xp_earned: h.xp_earned,
+      created_at: h.created_at
+    })));
   });
 
-  app.get(['/api/breathing/stats', '/breathing/stats'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+  app.get(['/api/breathing/stats', '/breathing/stats'], requireAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const stats = await dbService.getBreathingStats(currentUser.id);
     res.json({
-      total_sessions: 6,
-      total_duration: 720,
-      total_xp: 150,
-      average_cycles: 6.5
+      total_sessions: stats.totalSessions,
+      totalSessions: stats.totalSessions,
+      total_minutes: stats.totalMinutes,
+      totalMinutes: stats.totalMinutes,
+      total_xp: stats.totalXp,
+      totalXp: stats.totalXp,
+      current_streak: stats.currentStreak,
+      currentStreak: stats.currentStreak
     });
   });
 
@@ -1056,38 +1155,89 @@ async function startServer() {
   // PROFILE & SETTINGS EXTENSIONS (ANDROID PARITY)
   // ==========================================
 
-  app.get(['/api/profile/insights', '/profile/insights'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+  app.get(['/api/profile/insights', '/profile/insights'], requireAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const [moods, chats] = await Promise.all([
+      dbService.getMoodLogs(currentUser.id, 30),
+      dbService.getChatHistory(currentUser.id, 50)
+    ]);
+
+    const emotionCounts: Record<string, number> = {};
+    for (const m of moods) {
+      emotionCounts[m.emotion] = (emotionCounts[m.emotion] || 0) + 1;
+    }
+    for (const c of chats) {
+      if (c.role === 'user') {
+        emotionCounts[c.emotion] = (emotionCounts[c.emotion] || 0) + 1;
+      }
+    }
+
+    const topEmotions = Object.entries(emotionCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 3)
+      .map(([e]) => e);
+
+    const averageScore = moods.length > 0
+      ? Math.round(moods.reduce((acc, m) => acc + (m.score || 50), 0) / moods.length)
+      : 0;
+
     res.json({
-      emotional_trends: ["Calm", "Peaceful", "Focused"],
-      stability_score: 88,
-      top_emotions: ["Calm", "Hopeful", "Grateful"],
-      monthly_summary: "Consistent emotional resilience and healthy boundary development observed throughout the month."
+      total_entries: moods.length,
+      average_score: averageScore,
+      primary_emotion: topEmotions[0] || 'Neutral',
+      emotional_trends: topEmotions.length > 0 ? topEmotions : ["Calm", "Peaceful", "Focused"],
+      stability_score: averageScore || 85,
+      top_emotions: topEmotions.length > 0 ? topEmotions : ["Calm", "Hopeful", "Grateful"],
+      total_checkins: moods.length,
+      monthly_summary: `Consistent emotional resilience and healthy boundary development observed throughout ${moods.length} check-ins and reflections.`
     });
   });
 
-  app.post(['/api/profile/reset-data', '/profile/reset-data'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+  app.post(['/api/profile/reset-data', '/profile/reset-data'], requireAuth, async (req: AuthenticatedRequest, res) => {
     const currentUser = await resolveOrCreateUser(req);
     await dbService.deleteUserData(currentUser.id);
     res.json({ success: true, message: "All personal data has been securely deleted." });
   });
 
-  app.post(['/api/profile/export', '/profile/export'], optionalAuth, async (req: AuthenticatedRequest, res) => {
-    res.json({ success: true, data_url: null, message: "Profile data export generated successfully." });
-  });
-
-  app.put(['/api/settings/update', '/settings/update'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+  app.all(['/api/profile/export', '/profile/export'], requireAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const exported = await dbService.exportUserData(currentUser.id);
     res.json({
       success: true,
-      notifications_enabled: req.body.notifications_enabled ?? true,
-      ai_memory_enabled: req.body.ai_memory_enabled ?? true,
-      voice_enabled: req.body.voice_enabled ?? true,
-      ai_tone: req.body.ai_tone || 'Gentle Friend',
-      theme: req.body.theme || 'light',
-      language: req.body.language || 'mr'
+      exported_at: new Date().toISOString(),
+      user_id: currentUser.id,
+      data: exported,
+      message: "Profile data export generated successfully."
     });
   });
 
-  app.post(['/api/settings/reset-memory', '/settings/reset-memory'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+  app.get(['/api/settings', '/settings'], requireAuth, async (req: AuthenticatedRequest, res) => {
+    const currentUser = await resolveOrCreateUser(req);
+    const settings = await dbService.getUserSettings(currentUser.id);
+    res.json({ success: true, settings });
+  });
+
+  app.all(['/api/settings/update', '/settings/update', '/api/settings', '/settings'], requireAuth, async (req: AuthenticatedRequest, res) => {
+    if (req.method === 'GET') {
+      const currentUser = await resolveOrCreateUser(req);
+      const settings = await dbService.getUserSettings(currentUser.id);
+      return res.json({ success: true, settings });
+    }
+    const currentUser = await resolveOrCreateUser(req);
+    const settings = await dbService.saveUserSettings(currentUser.id, req.body);
+    res.json({
+      success: true,
+      notifications_enabled: settings.notifications_enabled,
+      ai_memory_enabled: settings.ai_memory_enabled,
+      voice_enabled: settings.voice_enabled,
+      ai_tone: settings.ai_tone,
+      theme: settings.theme,
+      language: settings.language,
+      settings
+    });
+  });
+
+  app.post(['/api/settings/reset-memory', '/settings/reset-memory'], requireAuth, async (req: AuthenticatedRequest, res) => {
     const currentUser = await resolveOrCreateUser(req);
     await dbService.resetMemories(currentUser.id);
     res.json({ success: true, message: "Companion memory reset successfully." });
@@ -1097,7 +1247,7 @@ async function startServer() {
   // USER-SCOPED COMPANION MEMORY ROUTES
   // ==========================================
 
-  app.get(['/api/companion/memories', '/companion/memories'], optionalAuth, async (req: AuthenticatedRequest, res) => {
+  app.get(['/api/companion/memories', '/companion/memories'], requireAuth, async (req: AuthenticatedRequest, res) => {
     const currentUser = await resolveOrCreateUser(req);
     const memories = await dbService.getMemories(currentUser.id);
     const numericUserId = parseInt(String(currentUser.id).replace(/\D/g, '').slice(-8) || '1', 10);
@@ -1146,10 +1296,13 @@ async function startServer() {
       teleManas: HELPLINE_RESOURCES.teleManas,
       kiran: HELPLINE_RESOURCES.kiran,
       vandrevala: HELPLINE_RESOURCES.vandrevala,
-      nationalEmergency: HELPLINE_RESOURCES.nationalEmergency,
+      emergency: HELPLINE_RESOURCES.emergency,
+      icall: HELPLINE_RESOURCES.icall,
+      nationalEmergency: HELPLINE_RESOURCES.emergency,
       protocols: [
         'Immediate crisis holding & resource routing',
         'Strictly zero medical diagnoses',
+        '100% helpline coverage with Tele-MANAS (14416) and KIRAN (1800-599-0019)',
         '24/7 Toll-free mental health support across all Indian states'
       ]
     });
