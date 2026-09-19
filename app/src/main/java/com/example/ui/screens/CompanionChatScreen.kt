@@ -437,7 +437,7 @@ fun SoulTalkCompanionChatScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
               verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-              items(chatMessages) { chatMessage ->
+              items(chatMessages, key = { "${it.id}_${it.created_at}" }) { chatMessage ->
                 ChatBubbleRow(chatMessage, companionName)
               }
               

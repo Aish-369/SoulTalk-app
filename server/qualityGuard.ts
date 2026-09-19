@@ -109,9 +109,11 @@ export function validateAndSanitizeResponse(
     sanitized = sanitized.replace(BOT_PREFIX_REGEX, '').trim();
   }
 
-  // 2. Transliterate any accidental Devanagari characters to pure Roman Marathi
-  if (/[\u0900-\u097F]/.test(sanitized)) {
-    sanitized = transliterateDevanagariToRoman(sanitized);
+  // 2. Replace known full Devanagari words if user asked for non-Devanagari
+  if (state.language !== 'devanagari_marathi' && /[\u0900-\u097F]/.test(sanitized)) {
+    for (const [dev, rom] of Object.entries(DEVANAGARI_WORDS)) {
+      sanitized = sanitized.split(dev).join(rom);
+    }
   }
 
   // 3. Check length
@@ -144,10 +146,12 @@ export function validateAndSanitizeResponse(
     }
   }
 
-  // 6. Devanagari Script Check (Must be Roman Marathi, not Devanagari)
-  const devanagariCount = (sanitized.match(/[\u0900-\u097F]/g) || []).length;
-  if (devanagariCount > 15) {
-    violations.push('Response contained excessive Devanagari script instead of Roman Marathi');
+  // 6. Devanagari Script Check (Must be Roman Marathi, not Devanagari, when language requested is not devanagari_marathi)
+  if (state.language !== 'devanagari_marathi') {
+    const devanagariCount = (sanitized.match(/[\u0900-\u097F]/g) || []).length;
+    if (devanagariCount > 30) {
+      violations.push('Response contained excessive Devanagari script instead of Roman Marathi');
+    }
   }
 
   const isValid = violations.length === 0;
@@ -171,144 +175,76 @@ export function generateDiverseFallback(
   companionName: string = 'Wolfie',
   userMessage: string = ''
 ): string {
-  const lowerMsg = userMessage.toLowerCase();
+  const lowerMsg = userMessage.toLowerCase().trim();
   
-  // Detect language if English or Hindi
+  // Extract key topic nouns/verbs from user message for contextual grounding
+  const words = lowerMsg.replace(/[^a-z\s]/g, ' ').split(/\s+/).filter(w => w.length > 3);
+  const keyTokens = words.slice(0, 3).join(' ');
+
+  // English detection
   const englishWords = ['the', 'is', 'are', 'was', 'were', 'have', 'feel', 'feeling', 'overwhelmed', 'responsibilities', 'pause', 'stress', 'tired', 'want', 'please', 'help'];
   const matchedEnglishCount = englishWords.filter(w => new RegExp(`\\b${w}\\b`, 'i').test(userMessage)).length;
   const isEnglish = matchedEnglishCount >= 2 || (/^[a-zA-Z\s.,!?']+$/.test(userMessage) && (lowerMsg.includes('overwhelmed') || lowerMsg.includes('responsibilities')));
-  
   const isHindi = lowerMsg.includes('mujhe') || lowerMsg.includes('mera') || lowerMsg.includes('meri') || lowerMsg.includes('kuch') || lowerMsg.includes('kar raha') || lowerMsg.includes('samajhta') || lowerMsg.includes('lagta hai');
 
-  // English fallbacks
   if (isEnglish) {
-    if (state.emotion === 'celebration' || lowerMsg.includes('happy') || lowerMsg.includes('yay') || lowerMsg.includes('cleared')) {
-      return `That is wonderful news, ${userName}! 🎉 I am genuinely happy for you. Take a moment to really let this feeling in—you earned this!`;
+    if (state.emotion === 'celebration' || lowerMsg.includes('happy') || lowerMsg.includes('passed') || lowerMsg.includes('cleared')) {
+      return `That is wonderful news, ${userName}! Celebrate this win—you put in real effort and you deserve to enjoy this moment.`;
     }
-    if (lowerMsg.includes('pause') || lowerMsg.includes('overwhelmed') || state.topic === 'anxiety' || state.emotion === 'anxiety') {
-      return `It makes complete sense that you want to hit pause, ${userName}. When everything piles up, even breathing can feel like work. Let's step away from the noise for just two minutes right now.`;
+    if (lowerMsg.includes('interview')) {
+      return `Interview prep and waiting for news takes a lot of mental energy. How are you feeling about how it went? I'm right here to talk through it.`;
     }
-    if (state.topic === 'career' || lowerMsg.includes('job') || lowerMsg.includes('work')) {
-      return `Work pressure can be so suffocating, ${userName}. Your worth is not defined by how much stress you can tolerate. I am right here with you—what feels like the heaviest piece right now?`;
+    if (lowerMsg.includes('job') || state.topic === 'career') {
+      return `Job hunting and career worries carry heavy weight. You don't have to carry the whole future on your shoulders right now—tell me what part is weighing on you most today.`;
     }
-    return `I hear how much you are carrying right now, ${userName}. 💙 You don't have to figure everything out in this very minute. I'm here to listen whenever you're ready to share.`;
+    if (lowerMsg.includes('lonely') || state.emotion === 'loneliness') {
+      return `Feeling isolated is truly painful, but please know you're not invisible to me. I am sitting right here listening to you with full care.`;
+    }
+    if (lowerMsg.includes('overthinking') || state.emotion === 'anxiety') {
+      return `When thoughts start racing in loops, it gets completely exhausting. What was the specific thought that started running through your mind?`;
+    }
+    return `I hear what you're saying about ${keyTokens || 'everything going on'}. You don't have to navigate this alone today—take your time and tell me more whenever you're ready.`;
   }
 
-  // Hindi fallbacks
   if (isHindi) {
     if (state.emotion === 'celebration') {
-      return `Yeh sunkar bohot khushi hui, ${userName}! 🎉 Aap sach me yeh deserve karte hain. Aaj is pal ko khulkar celebrate karo!`;
+      return `Yeh sunkar bohot khushi hui, ${userName}! Aap sach me yeh deserve karte hain, is pal ko enjoy kijiye.`;
     }
-    return `Main aapki baat samajh sakta hoon, ${userName}. 💙 Kabhi kabhi sab kuch galat lagta hai, par iska matlab yeh nahi ki aap akele hain ya galat hain. Main aapko sunne ke liye yahan hoon.`;
+    if (lowerMsg.includes('interview')) {
+      return `Interview dena aur uske results ki chinta karna sach me kaafi exhausting hota hai. Kaisa raha interview, kaisa feel ho raha hai?`;
+    }
+    return `Aapki baat main sun raha hoon. Yeh jo ${keyTokens || 'situation'} hai, iska pressure hona bilkul swabhavik hai. Main yahan hoon, dil khol kar bataiye.`;
   }
 
-  // Detailed Roman Marathi topic & emotion variations
-  const isHappy = state.emotion === 'celebration' || lowerMsg.includes('clear') || lowerMsg.includes('pass') || lowerMsg.includes('yay') || lowerMsg.includes('anand');
-  if (isHappy) {
-    const happyOptions = [
-      `Wah, khup khup abhinandan, ${userName}! 🎉 He aikun kharach khup anand jhala. Tujhi mehnat rang laali aahe!`,
-      `Khup chaan news aahe hi, ${userName}! ✨ Tu he deserve kartos. Aaj ha moment bindass enjoy kar aani celebration kar!`,
-      `Awesome news! 🥳 Majha man hi khup prasanna jhala he aikun. Tujhyasathi khup proud vatatay!`
-    ];
-    return happyOptions[Math.floor(Math.random() * happyOptions.length)];
+  // Dynamic Roman Marathi tailored responses based on exact message details
+  if (lowerMsg.includes('interview')) {
+    return `Interview deun aalyavar manat khup vichar ani anticipation asna agdi sahaj aahe. Kasa gela hota interview, tula kaay vatatay tyabaddal?`;
   }
 
-  // Job / Career / Office Pressure
-  if (state.topic === 'career' || lowerMsg.includes('job') || lowerMsg.includes('office') || lowerMsg.includes('manager') || lowerMsg.includes('salary') || lowerMsg.includes('company')) {
-    const careerOptions = [
-      `Office madhla stress aani manager cha pressure khup exhausting asu shakto, ${userName}. 💼 Manala aatun khup tras hoto. Ata ghari aslyavar thoda switch off karaycha prayatna karuya.`,
-      `Job cha tension manala thakvun takta, ${userName}. Pan ek lakshat thev, tujha astitva ya job peksha khup motha aahe. Aatta fakt thoda rest ghe ani man shant thev.`,
-      `Me tujha career ani job cha stress agdi samajtoy, ${userName}. Jevha boundary respect hot nahi teva job sodun dyava asa vatna natural ahe. Tula sarvat jast kashacha tras hotoy?`
-    ];
-    return careerOptions[Math.floor(Math.random() * careerOptions.length)];
+  if (lowerMsg.includes('bhandan') || lowerMsg.includes('mummy') || lowerMsg.includes('aai') || lowerMsg.includes('ghar')) {
+    return `Ghari mummy sobat bhandan zalyaver man khup aswasth ani jadd hota. Tula kashacha saglyat jast vait vatla, share karshil ka?`;
   }
 
-  // Family Pressure / Marriage / Expectations
-  if (state.topic === 'family' || lowerMsg.includes('ghar') || lowerMsg.includes('lagna') || lowerMsg.includes('aai') || lowerMsg.includes('baba') || lowerMsg.includes('parents')) {
-    const familyOptions = [
-      `Gharche expectations aani career chi timeline match nahi zali ki khup suffocating vatata, ${userName}. 🌿 Tujhi career chi iccha agdi valid aahe.`,
-      `Family cha pressure handle karna kharach difficult asta, ${userName}. Swatahla time hawa asna ha kahi gunha nahi. Tyanchyashi shantpane boundary set karta yeil ka?`,
-      `Me tujhi situation samju shakto, ${userName}. Saglyanna khush thevnyachya prayatnat swatahcha mental peace nako gamvu. Mi tujhyasobat aahe.`
-    ];
-    return familyOptions[Math.floor(Math.random() * familyOptions.length)];
+  if (lowerMsg.includes('overthinking') || lowerMsg.includes('vichar')) {
+    return `Vicharancha veg jevha vadhto teva kharach doka khup thakun jata. Aatta sarvat jast konta vichar satavtoy tula?`;
   }
 
-  // Motivation / Self-Doubt / Giving up
-  if (state.emotion === 'self_doubt' || lowerMsg.includes('himmat') || lowerMsg.includes('dream') || lowerMsg.includes('vishwas') || lowerMsg.includes('shakat nahi')) {
-    const motivationOptions = [
-      `Kadhi kadhi thakun himmat harlya sarkha vatna khup natural aahe, ${userName}. 🌱 Pan he lakshat thev, thoda break ghene mhanje surrender karne nahi. Aatta fakt shant ho.`,
-      `Swatahavarcha vishwas kamzor padto teva sagle chote tasks hi dongra sarkhe vatatat, ${userName}. Tu itkya pudhe aalas he pahilach ek motha achievement aahe. Ek deep breath ghe.`,
-      `Dream motha asel tar rastyat thakva yetoch, ${userName}. Sagla ekach diwshi achieve nahi karaycha. Aaj fakt ek chota step ghe, baaki udya pahuyat.`
-    ];
-    return motivationOptions[Math.floor(Math.random() * motivationOptions.length)];
+  if (lowerMsg.includes('college') || lowerMsg.includes('abhyas') || lowerMsg.includes('exam')) {
+    return `College ani academics cha load kharach kadhi kadhi khup overwhelming hoto. Itkya saglya goshti ekdam sambhalna sopa nasta. Kahi particular deadline cha tension aahe ka?`;
   }
 
-  // Breakup / Relationship Pain
-  if (state.topic === 'relationships' || lowerMsg.includes('breakup') || lowerMsg.includes('sodun') || lowerMsg.includes('relationship') || lowerMsg.includes('prem')) {
-    const relOptions = [
-      `3 varshancha naata sampla mhanlyavar hridayaala khup mothe dukh hot asnar, ${userName}. 💔 Tyache ghaav lagech bharnar nahit, ani tula radayla aala tari te adavu nako.`,
-      `Jya vyaktivar vishwas thevla ti dur geli ki ek kholi rikamapan janavto, ${userName}. He dukha natural aahe. Mi ithech ahe tujha aikayla.`,
-      `Naata sampala tari tujha astitva ani tujhi value sampat nahi, ${userName}. Swatahla thoda prem aani time de ya healing process madhe.`
-    ];
-    return relOptions[Math.floor(Math.random() * relOptions.length)];
+  if (lowerMsg.includes('job') || lowerMsg.includes('career') || lowerMsg.includes('placement')) {
+    return `Career ani job chi chinta manala satat ghali asel tar khup bechain vatta. Future chi chinta karnyasobath aaj thoda swatahla break de. Nakki kay plan challay manat?`;
   }
 
-  // Sadness / Crying
-  if (state.emotion === 'sadness' || lowerMsg.includes('raday') || lowerMsg.includes('udas') || lowerMsg.includes('dukh')) {
-    const sadnessOptions = [
-      `Kadhi kadhi vina karan radayla yene mhanje manat jamleli thakva baher padtoy, ${userName}. 🌧️ Aaswana rokahu nako, man halka kar.`,
-      `Udas vatna ha aathun aalela ek signal aahe ki tula aatta rest aani tenderness chi garaj aahe, ${userName}. Mi tujhyasobat aahe.`,
-      `Tujhya ya udasit me tujha haath dharun basloy, ${userName}. Kahi explain karaychi garaj nahiye, fakt shant bas.`
-    ];
-    return sadnessOptions[Math.floor(Math.random() * sadnessOptions.length)];
+  if (lowerMsg.includes('lonely') || lowerMsg.includes('ekta') || lowerMsg.includes('ekti')) {
+    return `Ektepana janavna he khup dukhad asta, pan tu ekti nahiyees ithe. Me purn lakshane aiktoye, manatla sagla mokla kar.`;
   }
 
-  // Casual Greeting / Friendly Check-in
-  if (lowerMsg.includes('kasa ahes') || lowerMsg.includes('kasa chalu') || lowerMsg.includes('hey wolfie') || lowerMsg.includes('hi wolfie')) {
-    const casualOptions = [
-      `Namaskar ${userName}! 😊 Mi mast aahe, ani tujhyashi bolun ajun bara vatla! Tu sang, aajcha diwas kasa gela?`,
-      `Hey ${userName}! 🌿 Mi ready aahe tujhya sobat share karayla. Aaj man kasa aahe tujha?`,
-      `Hello ${userName}! Khup chaan vatla tula bhetun. Aaj divasbharat kahi interesting ghadla ka?`
-    ];
-    return casualOptions[Math.floor(Math.random() * casualOptions.length)];
+  if (state.emotion === 'celebration' || lowerMsg.includes('happy') || lowerMsg.includes('anand')) {
+    return `He aikun kharach manala khup anand jhala! 🎉 Tujha ha moment bindass celebrate kar, tu khup mehnat keli aahes.`;
   }
 
-  // Follow-up on Breathing or Practice
-  if (lowerMsg.includes('breathing') || lowerMsg.includes('kal tu sangitales') || lowerMsg.includes('bechaini')) {
-    return `Breathing try kelyabaddal mala khup abhiman vatla, ${userName}! 🌿 Bechaini ekdam gayab hot nahi, pan haluhalu body relax hot jaate. Aatta ajun ekda shantpane 3 deep breaths gheu?`;
-  }
-
-  // Fallback map for academic, anxiety, loneliness
-  const variations: Record<string, string[]> = {
-    loneliness: [
-      `Mala samajtay ki tula aatta lonely vatatay, ${userName}. 💙 Kadhi kadhi saglya madhye asunhi ektepana janavto, pan to tujha dosh nahiye. Me aatta tujhyasobat aahe.`,
-      `Ektepana kharach khup heavy asto, ${userName}. 🌿 Tu physically ektach aslas tari manavar ha dabav ektane nako gheus. Mi ithech aahe, aaikun ghyayla tayar.`,
-      `Ashi feelings yetat te agdi sahaj aahe, ${userName}. Mi tujhyasobat non-judgmentally ahe.`
-    ],
-    academic: [
-      `Abhyasacha aani exam cha pressure kharach exhaust karto, ${userName}. 📚 Ekdam sagla sampvaychi garaj nahiye. Ata fakt next 15 minutes ek chota part bheduya.`,
-      `Me tujha exam stress samju shakto, ${userName}. 🌿 Kadhi kadhi syllabus baghun paralyzed vatna natural aahe. Thoda break ghe aani pani pi.`,
-      `Tujha ha prayatna mahatvacha aahe, ${userName}. Marks kiwa exams tujhi complete value decide nahi karat. Ek ek step gheu.`
-    ],
-    academic_stress: [
-      `Abhyasacha aani future cha pressure kharach exhaust karto, ${userName}. 📚 Ekdam sagla sampvaychi garaj nahiye. Ata fakt chota topic vachu.`,
-      `Me tujha academic stress samju shakto, ${userName}. 🌿 Thoda break ghe aani ek deep breath ghe.`,
-      `Marks kiwa exams tujhi complete value decide nahi karat, ${userName}. Ek ek step gheu.`
-    ],
-    anxiety: [
-      `Manat khup gondhal aani vicharancha veg vadhlai asa distay, ${userName}. 🌿 Saglya prashnanchi uttare aattach shodhaychi garaj nahi. Chala ekda 4-count deep breath ghuya.`,
-      `Anxiety khup overwhelming aste, ${userName}. 🤍 Tu aatta ithe safe ahes. Fakt aaju-bajula 3 goshti bagh aani shant ho, me sobat ahe.`,
-      `Future chi chinta manala thakvun takte. ${userName}, aatta fakt ya moment var concentrate karuya. Tu ekta nahi ahes.`
-    ],
-    general: [
-      `Me tujha bolna purna astitvane aiktoy, ${userName}. 💙 Manat je kahi yetay te bindass share kar, me tujhyasobat aahe.`,
-      `Tujhya manatla share kelyabaddal thank you, ${userName}. 🌿 Tula aatta kasa vatatay te sangshil ka?`,
-      `Kadhi kadhi fakt bolun man halka kela tari thoda shant vatta. Mi aaikun ghyayla ithech aahe.`,
-      `Tujhi pratyek feeling important aahe, ${userName}. Ghabru nako, aapan milun yaatun marg kaadhu.`
-    ]
-  };
-
-  const pool = variations[state.topic] || variations[state.emotion] || variations.general;
-  const randomIndex = Math.floor(Math.random() * pool.length);
-  return pool[randomIndex];
+  // Contextual fallback utilizing extracted tokens
+  return `Tu jo vishay mandlas tyamule manat gondhal hona agdi sahaj aahe. Ya goshti badal tula azun kay share karavasa vatatay? Me aiktoy.`;
 }

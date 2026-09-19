@@ -8,10 +8,16 @@ export const CrisisLevel = {
 
 export type CrisisLevelType = typeof CrisisLevel[keyof typeof CrisisLevel];
 
+export type CrisisType = 'NONE' | 'SELF' | 'THIRD_PARTY' | 'HISTORICAL' | 'NEGATED';
+
 export interface CrisisCheckResult {
   isCrisis: boolean;
   level: CrisisLevelType;
   confidence: number;
+  crisisType?: CrisisType;
+  isThirdParty?: boolean;
+  isHistorical?: boolean;
+  isNegated?: boolean;
   response?: string;
   matchedKeywords: string[];
   resources: {
@@ -40,11 +46,28 @@ const SEVERE_KEYWORDS = [
   'hurt myself', 'hurting myself', 'self harm', 'self-harm', 'harm myself', 'harming myself',
   'cut myself', 'cutting myself', 'overdose', 'swatahla hurt', 'swatala hurt', 'swatahala hurt',
   'dont want to live', "don't want to live", 'dont wanna live', 'not want to live',
+  'might kill myself', 'going to kill myself', 'gonna kill myself',
   'hang myself', 'jump off', 'marun jau', 'jagne nako', 'maraycha ahe', 'maraycha aahe', 'marun zava',
   'marun javasa vatat', 'marun javasa vatatay', 'marun java vatat', 'marun jau vatat', 'marun javasa',
   'aatmhatya', 'aatmahatya', 'jeevan sampva', 'jeevan nako', 'swatahla marnar', 'khallas karaycha',
   'khudkushi', 'mar jaana chahta', 'jaan lena chahta', 'jagaycha nahiye', 'jagaycha nahi',
+  'jagaychi iccha nahiye', 'jagaychi iccha nahi', 'jagaychi ichha nahiye', 'jagaychi ichha nahi', 'jagaychi icha nahi',
+  'jagavasa vatat nahi', 'jagavese vatat nahi', 'jagne asahya', 'jagne nako vatatay',
   'आत्महत्या', 'जगायचे नाही', 'जगावेसे वाटत नाही', 'स्वतःला संपवायचे', 'जीवन संपवायचे', 'स्वतःला इजा'
+];
+
+const THIRD_PARTY_CRISIS_KEYWORDS = [
+  'kill herself', 'kill himself', 'kill themselves', 'wants to die', 'want to die',
+  'end her life', 'end his life', 'end their life', 'take her life', 'take his life',
+  'take their life', 'hurt herself', 'hurt himself', 'hurting herself', 'hurting himself',
+  'cutting herself', 'cutting himself', 'cut herself', 'cut himself',
+  'talking about suicide', 'talking about dying', 'saying he wants to die',
+  'saying she wants to die', 'says he wants to die', 'says she wants to die',
+  'says they want to die', 'might hurt herself', 'might hurt himself',
+  'might kill herself', 'might kill himself', 'worried she might', 'worried he might',
+  'worried my friend might hurt', 'worried my friend might kill',
+  'swatahla hurt kartoy', 'swatahla hurt kartey', 'aatmahatya karnar ahe',
+  'suicidal', 'suicide'
 ];
 
 const FIGURATIVE_IDIOMS = [
@@ -57,14 +80,24 @@ const FIGURATIVE_IDIOMS = [
   "hasun marun gele", "hasun marun gelo", "hasun hasun marlo", "hasun maraychi vel"
 ];
 
+const HISTORICAL_PATTERNS = [
+  'last year', 'last month', 'years ago', 'year ago', 'in the past', 'back then',
+  'used to be suicidal', 'used to want to die', 'used to self-harm', 'used to self harm',
+  'was suicidal', 'had been suicidal', 'were suicidal', 'was thinking of suicide',
+  'history of suicide', 'attempted suicide in the past', 'survived suicide',
+  'recovered from suicide', 'recovered from self-harm', 'in high school i was suicidal',
+  'back in college i was suicidal', 'purvi suicidal', 'adhi suicidal', 'khup varshampurvi'
+];
+
 const NEGATION_PATTERNS = [
   "don't want to die", "dont want to die", "do not want to die", "not wanting to die",
   "not suicidal", "never suicidal", "not feeling suicidal", "not thinking of suicide",
+  "am not suicidal", "i am not suicidal", "i'm not suicidal", "im not suicidal",
   "not going to kill myself", "won't kill myself", "wont kill myself", "never kill myself",
   "do not want to kill myself", "don't want to kill myself", "dont want to kill myself",
   "not hurting myself", "not going to hurt myself", "don't want to hurt myself",
   "dont want to hurt myself", "do not want to hurt myself", "no plan to die",
-  "never want to die", "no desire to die"
+  "never want to die", "no desire to die", "maraycha nahi", "maraycha nahiye", "marnar nahi"
 ];
 
 const THIRD_PERSON_INDICATORS = [
@@ -73,7 +106,9 @@ const THIRD_PERSON_INDICATORS = [
   "my dad", "my father", "my partner", "my boyfriend", "my girlfriend",
   "someone i know", "a person i know", "he wants to die", "she wants to die",
   "they want to die", "he is suicidal", "she is suicidal", "they are suicidal",
-  "friend of mine", "friend is suicidal", "friend wants to die"
+  "friend of mine", "friend is suicidal", "friend wants to die", "friend might hurt",
+  "worried my friend", "sister wants to", "brother wants to", "roommate says",
+  "roommate wants to"
 ];
 
 const HIGH_KEYWORDS = [
@@ -90,13 +125,13 @@ const MEDIUM_KEYWORDS = [
 ];
 
 export function checkCrisis(text: string): CrisisCheckResult {
-  const t = text.toLowerCase().trim();
+  // Normalize apostrophes and whitespace
+  const t = text.toLowerCase().replace(/['’]/g, "'").trim();
   const matchedKeywords: string[] = [];
 
   // 1. Check for purely figurative non-crisis idioms
   for (const idiom of FIGURATIVE_IDIOMS) {
     if (t.includes(idiom)) {
-      // If the text does NOT contain other explicit self-harm terms, treat as non-crisis
       const hasOtherSelfHarm = SEVERE_KEYWORDS.some(kw =>
         kw !== 'want to die' && kw !== 'dont want to live' && !idiom.includes(kw) && t.includes(kw)
       );
@@ -105,6 +140,7 @@ export function checkCrisis(text: string): CrisisCheckResult {
           isCrisis: false,
           level: CrisisLevel.NONE,
           confidence: 0.0,
+          crisisType: 'NONE',
           matchedKeywords: [],
           resources: {
             primary: HELPLINE_RESOURCES.teleManas,
@@ -118,16 +154,22 @@ export function checkCrisis(text: string): CrisisCheckResult {
     }
   }
 
-  // 2. Check for explicit negated crisis statements (e.g. "I don't want to die", "I am not suicidal")
-  const isExplicitlyNegated = NEGATION_PATTERNS.some(neg => t.includes(neg));
-  if (isExplicitlyNegated) {
-    // Check if there are contradictory overt crisis markers like "overdose", "cut myself", "suicide plan"
-    const hasActiveCrisis = ['plan to die', 'overdose', 'cut myself', 'hang myself', 'jump off', 'swatahla marnar'].some(kw => t.includes(kw));
-    if (!hasActiveCrisis) {
+  // 2. Check for historical context (e.g., "my friend was suicidal last year")
+  const isHistorical = HISTORICAL_PATTERNS.some(hp => t.includes(hp));
+  if (isHistorical) {
+    // Check if there is an active present-day emergency override
+    const hasActiveOverride = [
+      'today', 'right now', 'planning to die today', 'going to kill', 'now wants to die',
+      'overdose', 'swatahla marnar ahe'
+    ].some(ov => t.includes(ov));
+
+    if (!hasActiveOverride) {
       return {
         isCrisis: false,
         level: CrisisLevel.NONE,
         confidence: 0.0,
+        crisisType: 'HISTORICAL',
+        isHistorical: true,
         matchedKeywords: [],
         resources: {
           primary: HELPLINE_RESOURCES.teleManas,
@@ -140,27 +182,53 @@ export function checkCrisis(text: string): CrisisCheckResult {
     }
   }
 
-  // 3. Check for third-person crisis statements ("My friend is suicidal")
-  const isThirdPerson = THIRD_PERSON_INDICATORS.some(tp => t.includes(tp));
-  const hasFirstPersonCrisis = [
-    'i want to die', 'kill myself', 'end my life', 'take my own life',
-    'i am suicidal', "i'm suicidal", 'swatahla hurt', 'cut myself'
-  ].some(fp => t.includes(fp));
-
-  for (const kw of SEVERE_KEYWORDS) {
-    if (t.includes(kw)) {
-      matchedKeywords.push(kw);
+  // 3. Check for explicit negated crisis statements (e.g. "I don't want to die", "I am not suicidal")
+  const isExplicitlyNegated = NEGATION_PATTERNS.some(neg => t.includes(neg));
+  if (isExplicitlyNegated) {
+    // Check if there are contradictory overt crisis markers like "overdose", "cut myself", "suicide plan"
+    const hasActiveCrisis = ['plan to die', 'overdose', 'cut myself', 'hang myself', 'jump off', 'swatahla marnar'].some(kw => t.includes(kw));
+    if (!hasActiveCrisis) {
+      return {
+        isCrisis: false,
+        level: CrisisLevel.NONE,
+        confidence: 0.0,
+        crisisType: 'NEGATED',
+        isNegated: true,
+        matchedKeywords: [],
+        resources: {
+          primary: HELPLINE_RESOURCES.teleManas,
+          secondary: HELPLINE_RESOURCES.vandrevala,
+          kiran: HELPLINE_RESOURCES.kiran,
+          emergency: HELPLINE_RESOURCES.emergency,
+          icall: HELPLINE_RESOURCES.icall
+        }
+      };
     }
   }
 
+  // 4. Check for third-person crisis statements ("My friend is suicidal", "My sister wants to kill herself")
+  const isThirdPerson = THIRD_PERSON_INDICATORS.some(tp => t.includes(tp)) ||
+    ['kill herself', 'kill himself', 'kill themselves', 'wants to die', 'hurt herself', 'hurt himself', 'worried my friend'].some(kw => t.includes(kw));
+
+  const hasFirstPersonCrisis = [
+    'i want to die', 'kill myself', 'end my life', 'take my own life',
+    'i am suicidal', "i'm suicidal", 'im suicidal', 'swatahla hurt', 'cut myself',
+    'i might kill myself', 'gonna kill myself', 'going to kill myself',
+    'dont want to live', "don't want to live", 'i dont want to live'
+  ].some(fp => t.includes(fp));
+
+  const matchedThirdPartyKeywords = THIRD_PARTY_CRISIS_KEYWORDS.filter(kw => t.includes(kw));
+
   // Third-person disclosure handling
-  if (isThirdPerson && !hasFirstPersonCrisis && matchedKeywords.length > 0) {
+  if (isThirdPerson && !hasFirstPersonCrisis && matchedThirdPartyKeywords.length > 0) {
     return {
       isCrisis: true,
       level: CrisisLevel.SEVERE,
-      confidence: 0.96,
-      matchedKeywords,
-      response: `I hear how alarming and painful it is to see someone you care about going through this crisis. You are being a supportive friend, but you do not have to carry this alone. Please connect them with immediate caring help: call Tele-MANAS at 14416 (or 1800-891-4416), call KIRAN at 1800-599-0019, or call Emergency at 112. Free, confidential support is available 24/7 to guide both of you.`,
+      confidence: 0.98,
+      crisisType: 'THIRD_PARTY',
+      isThirdParty: true,
+      matchedKeywords: matchedThirdPartyKeywords,
+      response: `I hear how alarming, frightening, and painful it is to see someone you care about going through this crisis. You are being a supportive friend, but you do not have to carry this emergency alone. Please connect them with immediate caring help right now: call Tele-MANAS at 14416 (or 1800-891-4416), call KIRAN at 1800-599-0019, or call Emergency Services at 112. Free, confidential support is available 24/7 to guide both of you.`,
       resources: {
         primary: HELPLINE_RESOURCES.teleManas,
         secondary: HELPLINE_RESOURCES.vandrevala,
@@ -171,14 +239,22 @@ export function checkCrisis(text: string): CrisisCheckResult {
     };
   }
 
-  // First-person severe crisis handling
+  // 5. First-person severe crisis handling
+  for (const kw of SEVERE_KEYWORDS) {
+    if (t.includes(kw)) {
+      matchedKeywords.push(kw);
+    }
+  }
+
   if (matchedKeywords.length > 0) {
     return {
       isCrisis: true,
       level: CrisisLevel.SEVERE,
-      confidence: 0.98,
+      confidence: 0.99,
+      crisisType: 'SELF',
+      isThirdParty: false,
       matchedKeywords,
-      response: `I hear that you are in deep, heavy pain right now, and I want you to know that your life matters. Please reach out to someone who can help you right now. You can call Tele-MANAS at 14416 (or 1800-891-4416), call KIRAN at 1800-599-0019, or call Emergency at 112. You are not alone, and free confidential support is available 24/7.`,
+      response: `I hear that you are in deep, overwhelming pain right now, and I want you to know that your life matters. Please reach out to someone who can help keep you safe right now. You can call Tele-MANAS at 14416 (or 1800-891-4416), call KIRAN at 1800-599-0019, or call Emergency Services at 112. You are not alone, and free, confidential support is available 24/7.`,
       resources: {
         primary: HELPLINE_RESOURCES.teleManas,
         secondary: HELPLINE_RESOURCES.vandrevala,
@@ -238,6 +314,7 @@ export function checkCrisis(text: string): CrisisCheckResult {
     isCrisis: false,
     level: CrisisLevel.NONE,
     confidence: 0.0,
+    crisisType: 'NONE',
     matchedKeywords: [],
     resources: {
       primary: HELPLINE_RESOURCES.teleManas,

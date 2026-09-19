@@ -712,12 +712,12 @@ async function startServer() {
     if (routing.retrieveKnowledge) {
       try {
         const vectorResults = await searchPgvectorRAG(userText, 3);
-        if (vectorResults && vectorResults.length > 0) {
-          knowledgeSnippets = vectorResults.map(r => ({
+        if (vectorResults && vectorResults.documents && vectorResults.documents.length > 0) {
+          knowledgeSnippets = vectorResults.documents.map(r => ({
             id: String(r.id),
             topic: r.category,
             title: `Psychoeducation on ${r.category}`,
-            content: r.chunk_text.slice(0, 350),
+            content: (r.content || '').slice(0, 350),
             safetyNotes: 'Supportive non-clinical companion guidance'
           }));
           knowledgeRetrieved = true;
@@ -762,6 +762,23 @@ async function startServer() {
     const guard = validateAndSanitizeResponse(replyText, emotionalState, user_name);
     replyText = guard.sanitizedText;
 
+    // Telemetry generation (No sensitive data or tokens logged)
+    const requestId = `req_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    const conversationId = String(currentUser.id);
+    const userMessageHash = crypto.createHash('sha256').update(userText).digest('hex').slice(0, 16);
+    const finalPromptHash = crypto.createHash('sha256').update(systemPrompt + '\n' + userText).digest('hex').slice(0, 16);
+    const modelProvider = genResult.modelProvider;
+    const modelName = genResult.modelUsed;
+    const ragDocumentIds = knowledgeSnippets.map(k => k.id || k.topic);
+    const safetyResult = crisisCheck.isCrisis ? `CRISIS_${crisisCheck.level}` : 'SAFE';
+    const emotionResult = emotion;
+    const rawModelResponseHash = crypto.createHash('sha256').update(genResult.rawModelResponse || '').digest('hex').slice(0, 16);
+    const qualityGuardResult = guard.isValid ? 'VALID' : `VIOLATIONS_${guard.violations.length}`;
+    const fallbackUsed = genResult.fallbackUsed;
+    const finalResponseHash = crypto.createHash('sha256').update(replyText).digest('hex').slice(0, 16);
+
+    console.log(`[Telemetry] REQUEST_ID=${requestId} CONVERSATION_ID=${conversationId} USER_MESSAGE_HASH=${userMessageHash} FINAL_PROMPT_HASH=${finalPromptHash} MODEL_PROVIDER=${modelProvider} MODEL_NAME=${modelName} RAG_DOCUMENT_IDS=[${ragDocumentIds.join(',')}] SAFETY_RESULT=${safetyResult} EMOTION_RESULT=${emotionResult} RAW_MODEL_RESPONSE_HASH=${rawModelResponseHash} QUALITY_GUARD_RESULT=${qualityGuardResult} FALLBACK_USED=${fallbackUsed} FINAL_RESPONSE_HASH=${finalResponseHash}`);
+
     // Persist in User-Isolated Database
     await dbService.addChatMessage(currentUser.id, 'user', userText, emotion, emotionConfidence);
     const companionMsg = await dbService.addChatMessage(
@@ -787,11 +804,31 @@ async function startServer() {
       knowledge_retrieved: genResult.knowledgeRetrieved,
       training_exemplar_used: false,
       model: genResult.modelUsed,
+      model_provider: modelProvider,
+      fallback_used: fallbackUsed,
+      safety_result: safetyResult,
+      response_hash: finalResponseHash,
       emotional_state: emotionalState,
       rag_mode: routing.retrieveKnowledge ? 'KNOWLEDGE_RAG' : 'GENERATIVE_DIRECT',
       retrieved_count: knowledgeSnippets.length,
       retrieved_topics: [emotionalState.topic],
-      offline_capable: true
+      rag_document_ids: ragDocumentIds,
+      offline_capable: true,
+      telemetry: {
+        request_id: requestId,
+        conversation_id: conversationId,
+        user_message_hash: userMessageHash,
+        final_prompt_hash: finalPromptHash,
+        model_provider: modelProvider,
+        model_name: modelName,
+        rag_document_ids: ragDocumentIds,
+        safety_result: safetyResult,
+        emotion_result: emotionResult,
+        raw_model_response_hash: rawModelResponseHash,
+        quality_guard_result: qualityGuardResult,
+        fallback_used: fallbackUsed,
+        final_response_hash: finalResponseHash
+      }
     });
   };
 

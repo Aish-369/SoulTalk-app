@@ -618,37 +618,37 @@ class RagEngine {
 
     // LONELINESS
     if (topic === 'loneliness') {
-      return `Mala samajtay ki tula kiti lonely vatat aahe, ${userName}. 💙 Kadhi kadhi saglya lokanchya madhye asunhi ektepana janavto, pan to tujha dosh nahiye. Me right now tujhyasobat aahe. Shwas ghe aani manatla sang mala.`;
+      return `Ektepana janavna khup dukhad asta. Saglya goshti ektech sahan karnyasarkhya vatat aslyas, ithe man mokla karayla tu bilkul safe ahes. Nakki kashamule ashi feeling yetiye?`;
     }
 
     // STRESS / OVERWHELM
     if (topic === 'stress') {
-      return `Tujha stress me purnpane samju shakto, ${userName}. 🌿 Sagla ekach veli sambhalaychi garaj nahiye. Chala ek deep breath gheu 4 counts sathi. Fakt pudhcha chota step ghe, tu khup chaan kartoy/kartes.`;
+      return `Itkya saglya vicharanchi dhadapad manala kharach thakvun takte. Sagla ekach veli manage karayla gela tar load vadhna swabhavik aahe. Aatta sarvat jast kashtadayi kay vatatay?`;
     }
 
     // ANXIETY / FUTURE WORRY
     if (topic === 'anxiety') {
-      return `Future chi chinta aani anxiety khup heavy vatu shakte, ${userName}. 🌿 Pan ek lakshat thev—sagle prashna aajach sodvaychi garaj nahiye. Ek deep breath ghe. Tu aatta safe ahes.`;
+      return `Bhavishyachi kalji asel tar man satat aswasth rahata. Pan pratyek prashnache uttar lagech milavnyachi ghai nako karus. Ya kshani tula sarvat jasta kasla tension ahe?`;
     }
 
     // ACADEMIC / CAREER
     if (topic === 'academic') {
-      return `Abhyasacha aani exam cha pressure kharach bhari padto, ${userName}. 📚 Pan tu swatahla ekadam strain nako karus. 15-minute cha ek chota timer laav, aani thoda thoda karun samjun ghe. Me sobat ahe!`;
+      return `Abhyas aani future careers cha tan khup jasta asu shakto. Swatahavar itka jada taan nako thevus. Kahi vishisht vishay kiva task baddal tula chinta vatatye ka?`;
     }
 
     // SLEEP ROUTINE
     if (topic === 'sleep') {
-      return `Ratrichya veli vicharancha gondhal jast vadhava he agdi sahaj aahe, ${userName}. 🌙 Manatle vichar ekda kagadawar lihun thev aani screen band karun 5 deep breaths ghe. Shanti ghe.`;
+      return `Ratrichya shantte madhye kadhi kadhi vicharancha veg azun vadhava asa vatta. Screen thoda vel baju la thevun man shant karun bagh. Kay vatatay tula?`;
     }
 
     // RELATIONSHIPS / CONFLICT / FRIENDSHIP
     if (topic === 'relationships') {
-      return `Naatyatlya bhandanani kiwa mitranbarobarchya distance mule man khup dukhata, ${userName}. 💙 Me purn lakshya deun tujha aiktoy. Manat je kahi ahe te bindass sang mala.`;
+      return `Aaplyansobat bhandan kiwa durava zalyaver man khup jadd hota. Te agdi swabhavik aahe. Nakki kay ghadla, share karavasa vatata ka?`;
     }
 
     // CONFUSION / LOST
     if (topic === 'confusion') {
-      return `Kadhi kadhi life madhye kahi samjat nahi aani sagla confuse vatata, ${userName}. 🤍 He agdi normal aahe. Tu ekta nahi ahes. Manatla sankoch baher kadh.`;
+      return `Kadhi kadhi pudhe kay karaycha he disat nahi aani gondhal hoto. Ha phase khup common aahe. Tula sarvat jast konti goshta confuse kartiye?`;
     }
 
     // SADNESS / HURT / BAD DAY

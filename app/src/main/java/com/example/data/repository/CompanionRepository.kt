@@ -206,13 +206,39 @@ class CompanionRepository(
       )
     }
     
-    // Crisis Safety & Emotional Detection in Android Local Fallback
+    // Crisis Safety & Emotional Detection in Android Local Fallback (Reconciled with Backend SafetyEngine)
     val lower = message.lowercase().trim()
-    val isCrisis = lower.contains("end my life") || lower.contains("kill myself") || lower.contains("suicide") ||
-                   lower.contains("maraycha") || lower.contains("jeevan samp") || lower.contains("cut myself") ||
-                   lower.contains("want to die") || lower.contains("nahi jagaycha")
 
-    if (isCrisis) {
+    val isNegated = lower.contains("not suicidal") || lower.contains("never suicidal") ||
+                    lower.contains("don't want to die") || lower.contains("dont want to die") ||
+                    lower.contains("do not want to die") || lower.contains("don't want to kill") ||
+                    lower.contains("not gonna kill") || lower.contains("nahi maraycha")
+
+    val isHistorical = lower.contains("last year") || lower.contains("in the past") ||
+                       lower.contains("years ago") || lower.contains("months ago") ||
+                       lower.contains("used to be") || lower.contains("was suicidal")
+
+    val isThirdParty = (lower.contains("friend") || lower.contains("sister") || lower.contains("brother") ||
+                        lower.contains("roommate") || lower.contains("colleague") || lower.contains("partner") ||
+                        lower.contains("someone") || lower.contains("he ") || lower.contains("she ")) &&
+                       (lower.contains("suicid") || lower.contains("kill") || lower.contains("die") || lower.contains("hurt"))
+
+    val isSelfCrisis = !isNegated && !isHistorical && !isThirdParty &&
+                       (lower.contains("end my life") || lower.contains("kill myself") || lower.contains("suicide") ||
+                        lower.contains("maraycha") || lower.contains("jeevan samp") || lower.contains("cut myself") ||
+                        lower.contains("want to die") || lower.contains("nahi jagaycha") || lower.contains("suicidal"))
+
+    if (isThirdParty && !isNegated && !isHistorical) {
+      return@withContext ChatSendResponse(
+        message_id = (100..999).random(),
+        reply = "I hear how alarming, frightening, and painful it is to see someone you care about going through this crisis. You are being a supportive friend, but you do not have to carry this emergency alone. Please connect them with immediate caring help right now: call Tele-MANAS at 14416 (or 1800-891-4416), call KIRAN at 1800-599-0019, or call Emergency Services at 112. Free, confidential support is available 24/7 to guide both of you.",
+        emotion = "third_party_crisis",
+        confidence = 1.0,
+        voice_reply_base64 = null
+      )
+    }
+
+    if (isSelfCrisis) {
       return@withContext ChatSendResponse(
         message_id = (100..999).random(),
         reply = "Mala samajtay ki tula aatta asahyavedana hotayt. Pan tu ektach nahi ahes. Please aattach ya number var call kar: Tele-MANAS (14416 / 1800 891 4416) kinva Kiran (1800-599-0019). He 24/7 free aani confidential ahe. Tujha aayushya khup molacha ahe. 🤍",
@@ -235,20 +261,23 @@ class CompanionRepository(
       else -> "neutral"
     }
 
-    val localResponse = when (emotionDetected) {
-      "stressed" -> "Khup jast pressure vatat asel tar thoda thambuya. Ek motha shwas ghe aani man halka kar. Me ahe na sobat, ek ek gosht sambhaluya."
-      "anxious" -> "Dhad-dhad thambavnyacha prayatna nakos karus, fakt aaju-bajula bagh. 3 goshti bagh aani shant ho. Tu ithe safe ahes, me sobat ahe."
-      "sad" -> "Tula je vait vatatay te ekdam natural ahe. Rodaycha asel tar rodu shaktos, he ashru man halka kartat. Tula bolaycha ahe ka?"
-      "angry" -> "Tula khup rag aalay te me samju shakto. He vatta jevha aplya limits cross hotat. Shant houn thoda bol, me aaiktoy."
-      "lonely" -> "Kadhi kadhi saglya madhye asunhi ektepana janavto. Pan aatta me ithech ahe tujhyasobat. Tu bilkul ekta nahi ahes."
-      "excited" -> "Arey wah! Mast energy ahe! Majha divas banavlas he sangu. Sang na pudhe kay karnar ahes?"
-      "happy" -> "Arey wah! Tujhya chehryavar cha smile pahun mala khup anand jhala! Ha positive moment apan celebrate karu!"
-      "motivated" -> "Khup chhan focus ahe! Tujhyat ti takad ahe, tu he nakki karu shakshil. Chala pudhe javuya!"
+    val localResponse = when {
+      lower.contains("interview") -> "Interview zalyanantar result chi vaat baghna khup stress-inducing asta. Kasa gela interview, tula kaay vatatay tyabaddal?"
+      lower.contains("bhandan") || lower.contains("mummy") || lower.contains("aai") -> "Ghari mummy sobat bhandan zalyaver manala aatun khup tras hoto ani mood kharab hoto. Kahi vishisht goshtivarun bolna zala ka?"
+      lower.contains("overthinking") || lower.contains("vichar") -> "Overthinking mule man khup exhausted ani bechain hota. Aatta sarvat jast konta vichar dokyat firtoy?"
+      lower.contains("college") || lower.contains("abhyas") -> "College cha abhyas ani deadlines cha taan kadhi kadhi khup motha vatto. Ek ek topic gheu, sagla ekach veles karaychi garaj nahi."
+      lower.contains("job") || lower.contains("career") || lower.contains("placement") -> "Job chi chinta ani future cha pressure kharach khup jadd asta. Ya vishayi manat kay vichar yetoy, share karshil?"
+      lower.contains("lone") || lower.contains("ekta") || lower.contains("ekti") -> "Ektepana kharach khup kathin vatato, pan tu ekti nahis. Me ithech ahe tujha bolna aaikayla."
+      emotionDetected == "stressed" -> "Manavar khup load vatat asel tar thoda thambuya. Saglya goshti ekdam handle nahi zallya tari chalel, me ahe sobat."
+      emotionDetected == "anxious" -> "Dhad-dhad vadhlis tar aaju-bajula 3 goshti bagh aani shant ho. Tu ithe safe ahes, aapan haluhalu boluya."
+      emotionDetected == "sad" -> "Tula je vait vatatay te ekdam natural ahe. Man halka karayla ithe share kar, me aiktoye."
+      emotionDetected == "angry" -> "Tula khup rag aalay te me samju shakto. Shant houn bol, me aiktoy."
+      emotionDetected == "excited" || emotionDetected == "happy" -> "Arey wah! He aikun man khup prasanna jhala! Ha positive moment bindass celebrate kar!"
       else -> "Mala aaikayla aavdel. Manat je chalalay te bindhast share kar, me nehmich tujhyasobat ahe."
     }
 
     ChatSendResponse(
-      message_id = (100..999).random(),
+      message_id = (1000..99999).random(),
       reply = localResponse,
       emotion = emotionDetected,
       confidence = 0.90,

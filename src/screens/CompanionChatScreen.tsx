@@ -189,9 +189,9 @@ export const CompanionChatScreen: React.FC<CompanionChatScreenProps> = ({
     onAddXp(10);
 
     const startTime = Date.now();
-    // Setup 8-second timeout controller for offline / slow network handling
+    // Setup 30-second timeout controller for LLM generation & RAG retrieval resilience
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+    const timeoutId = setTimeout(() => controller.abort(), 30000);
 
     try {
       // Call backend API /api/chat with user authentication
@@ -257,23 +257,34 @@ export const CompanionChatScreen: React.FC<CompanionChatScreenProps> = ({
 
         let fallbackReply = '';
         if (isMarathi) {
-          if (textLower.includes('lonely') || textLower.includes('ekta') || textLower.includes('ekti')) {
-            fallbackReply = `Mala samajtay ki tula kiti lonely vatat aahe, ${user.name}. 💙 Me ithech tujhyasobat aahe. Ek deep breath ghe, tu ekta/ekti nahis.`;
-          } else if (textLower.includes('stress') || textLower.includes('tension') || textLower.includes('abhyas')) {
-            fallbackReply = `Tujha stress me samju shakto, ${user.name}. 🌿 Sagla ekdam sambhalaychi garaj nahi. 4 counts cha shwas ghe, me sobat ahe.`;
-          } else if (textLower.includes('vait') || textLower.includes('sad') || textLower.includes('dukha')) {
-            fallbackReply = `Tula vait vatat asel tar dabav nako thevus. 😔 Man halka karayla ithe share kar, me aiktot.`;
+          if (textLower.includes('interview')) {
+            fallbackReply = `Interview zalyanantar result chi vaat baghna khup stress-inducing asta. Kasa gela interview, kahi specific prashna vicharla ka tyanni?`;
+          } else if (textLower.includes('bhandan') || textLower.includes('mummy') || textLower.includes('aai')) {
+            fallbackReply = `Ghari mummy sobat bhandan zalyaver manala aatun khup tras hoto ani mood kharab hoto. Kahi vishisht goshtivarun bolna zala ka?`;
+          } else if (textLower.includes('overthinking') || textLower.includes('vichar')) {
+            fallbackReply = `Overthinking mule man khup exhausted ani bechain hota. Aatta sarvat jast konta vichar dokyat firtoy?`;
+          } else if (textLower.includes('college') || textLower.includes('abhyas')) {
+            fallbackReply = `College cha abhyas ani deadlines cha taan kadhi kadhi khup motha vatto. Ek ek topic gheu, sagla ekach veles karaychi garaj nahi.`;
+          } else if (textLower.includes('job') || textLower.includes('tension') || textLower.includes('career')) {
+            fallbackReply = `Job chi chinta ani future cha pressure kharach khup jadd asta. Ya vishayi manat kay vichar yetoy, share karshil?`;
+          } else if (textLower.includes('lonely') || textLower.includes('ekta') || textLower.includes('ekti')) {
+            fallbackReply = `Ektepana kharach khup kathin vatato, pan tu ekti nahis. Me ithech ahe tujha bolna aaikayla.`;
           } else {
-            fallbackReply = `Me tujha bolna purn astitvane aiktot, ${user.name}. 💙 Ha tujha safe space ahe, manatla sang mala.`;
+            fallbackReply = `Tu je boltoy te me samjun ghetloy. Ya goshtibaddal tula azun kay sangavasa vatta?`;
           }
         } else {
-          fallbackReply = `I'm listening closely to your words, ${user.name}. Whatever you're experiencing is completely valid. Would it feel soothing to take 3 slow diaphragmatic breaths together right now?`;
-          if (textLower.includes('anxious') || textLower.includes('overwhelm') || textLower.includes('stress')) {
-            fallbackReply = `I hear how heavy things feel right now. Place a gentle hand over your chest, breathe in slowly for 4 seconds, and let the future wait. You are safe in this sanctuary.`;
-          } else if (textLower.includes('tired') || textLower.includes('exhaust')) {
-            fallbackReply = `Your soul has been working so hard. Rest isn't a reward you have to earn; it is a sacred gift. Let's take today one soft step at a time.`;
-          } else if (textLower.includes('happy') || textLower.includes('good') || textLower.includes('great')) {
-            fallbackReply = `That warms my heart so much! 🌟 Let's bottle up this lovely feeling so you can return to its warmth whenever you need it.`;
+          if (textLower.includes('interview')) {
+            fallbackReply = `Waiting after an interview can be so nerve-wracking. How are you feeling about how things went?`;
+          } else if (textLower.includes('family') || textLower.includes('fight') || textLower.includes('argument')) {
+            fallbackReply = `Arguments with family leave such a heavy ache behind. What happened that hurt or frustrated you most?`;
+          } else if (textLower.includes('overthinking')) {
+            fallbackReply = `Overthinking is so mentally draining when loops keep repeating. What is the central thought spinning right now?`;
+          } else if (textLower.includes('job') || textLower.includes('career') || textLower.includes('work')) {
+            fallbackReply = `Career uncertainties bring a lot of pressure. You don't have to resolve everything today—what is on your mind?`;
+          } else if (textLower.includes('lonely') || textLower.includes('alone')) {
+            fallbackReply = `Feeling lonely can feel very heavy, but I am right here beside you. You don't have to be alone with this feeling.`;
+          } else {
+            fallbackReply = `I hear you closely. Take all the space and time you need, and tell me whatever you feel like sharing.`;
           }
         }
 
